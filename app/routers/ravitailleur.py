@@ -27,7 +27,7 @@ def get_today_deliveries(
     return [DeliveryResponse.from_orm(d) for d in deliveries]
 
 @router.put("/start-delivery/{delivery_id}")
-def start_delivery(
+async def start_delivery(
     delivery_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role(RoleEnum.RAVITAILLEUR))
@@ -47,7 +47,7 @@ def start_delivery(
     db.commit()
     db.refresh(delivery)
     
-    manager.broadcast_to_all({
+    await manager.broadcast_to_all({
         "type": "delivery_started",
         "delivery_id": delivery.id,
         "truck_id": delivery.truck_id
@@ -56,7 +56,7 @@ def start_delivery(
     return {"status": "ok", "delivery_id": delivery.id}
 
 @router.put("/confirm-delivery/{delivery_id}")
-def confirm_delivery(
+async def confirm_delivery(
     delivery_id: int,
     end_latitude: float,
     end_longitude: float,
@@ -85,7 +85,7 @@ def confirm_delivery(
     db.commit()
     db.refresh(delivery)
     
-    manager.broadcast_to_all({
+    await manager.broadcast_to_all({
         "type": "delivery_completed",
         "delivery_id": delivery.id,
         "depot_id": delivery.destination_depot_id,
@@ -124,7 +124,7 @@ async def send_gps_update(
     db.refresh(gps_log)
     
     # Broadcast en temps réel
-    manager.broadcast_to_all({
+    await manager.broadcast_to_all({
         "type": "gps_update",
         "truck_id": gps_data.truck_id,
         "latitude": gps_data.latitude,

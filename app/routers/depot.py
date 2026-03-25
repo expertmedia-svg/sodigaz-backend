@@ -233,7 +233,7 @@ def get_preorders(
     return [PreorderResponse.from_orm(p) for p in preorders]
 
 @router.put("/declare-low-stock")
-def declare_low_stock(
+async def declare_low_stock(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role(RoleEnum.DEPOT))
 ):
@@ -249,7 +249,7 @@ def declare_low_stock(
     
     db.commit()
     
-    manager.broadcast_to_all({
+    await manager.broadcast_to_all({
         "type": "depot_low_stock",
         "depot_id": depot.id,
         "depot_name": depot.name
@@ -258,7 +258,7 @@ def declare_low_stock(
     return {"status": "ok", "message": "Stock faible déclaré"}
 
 @router.put("/declare-out-of-stock")
-def declare_out_of_stock(
+async def declare_out_of_stock(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role(RoleEnum.DEPOT))
 ):
@@ -275,7 +275,7 @@ def declare_out_of_stock(
     
     db.commit()
     
-    manager.broadcast_to_all({
+    await manager.broadcast_to_all({
         "type": "depot_out_of_stock",
         "depot_id": depot.id,
         "depot_name": depot.name
@@ -284,7 +284,7 @@ def declare_out_of_stock(
     return {"status": "ok", "message": "Rupture déclarée"}
 
 @router.put("/declare-restocked")
-def declare_restocked(
+async def declare_restocked(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role(RoleEnum.DEPOT))
 ):
@@ -301,7 +301,7 @@ def declare_restocked(
     
     db.commit()
     
-    manager.broadcast_to_all({
+    await manager.broadcast_to_all({
         "type": "depot_restocked",
         "depot_id": depot.id,
         "depot_name": depot.name
@@ -533,7 +533,7 @@ def assign_delivery_to_driver(
     }
 
 @router.post("/confirm-delivery/{delivery_id}")
-def confirm_delivery_reception(
+async def confirm_delivery_reception(
     delivery_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role(RoleEnum.DEPOT))
@@ -581,7 +581,7 @@ def confirm_delivery_reception(
     db.commit()
     
     # Notifier via websocket
-    manager.broadcast_to_all({
+    await manager.broadcast_to_all({
         "type": "delivery_confirmed",
         "delivery_id": delivery.id,
         "depot_id": depot.id
@@ -630,7 +630,7 @@ def get_preorders_list(
     return list(preorders_grouped.values())
 
 @router.post("/confirm-preorder/{preorder_id}")
-def confirm_preorder_action(
+async def confirm_preorder_action(
     preorder_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role(RoleEnum.DEPOT))
@@ -668,7 +668,7 @@ def confirm_preorder_action(
     db.commit()
     
     # Notifier l'utilisateur
-    manager.broadcast_to_all({
+    await manager.broadcast_to_all({
         "type": "preorder_confirmed",
         "preorder_id": preorder.id,
         "user_id": preorder.user_id
@@ -677,7 +677,7 @@ def confirm_preorder_action(
     return {"status": "ok", "message": "Précommande confirmée"}
 
 @router.post("/cancel-preorder/{preorder_id}")
-def cancel_preorder_action(
+async def cancel_preorder_action(
     preorder_id: int,
     request: CancelPreorderRequest,
     db: Session = Depends(get_db),
@@ -707,7 +707,7 @@ def cancel_preorder_action(
     db.commit()
     
     # Notifier l'utilisateur
-    manager.broadcast_to_all({
+    await manager.broadcast_to_all({
         "type": "preorder_cancelled",
         "preorder_id": preorder.id,
         "user_id": preorder.user_id,
