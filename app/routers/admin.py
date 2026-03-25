@@ -357,7 +357,7 @@ def get_delivery_details(
 
 
 @router.post("/deliveries", response_model=DeliveryResponse)
-def create_delivery(
+async def create_delivery(
     delivery_data: DeliveryCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role(RoleEnum.ADMIN))
@@ -398,7 +398,7 @@ def create_delivery(
     db.refresh(new_delivery)
     
     # Broadcast
-    manager.broadcast_to_all({
+    await manager.broadcast_to_all({
         "type": "delivery_created",
         "delivery_id": new_delivery.id,
         "truck_id": new_delivery.truck_id,
@@ -431,7 +431,7 @@ def debug_delivery_assignment(delivery_id: int, db: Session = Depends(get_db), c
         raise HTTPException(status_code=500, detail=f"debug error: {type(e).__name__}: {e}")
 
 @router.put("/deliveries/{delivery_id}", response_model=DeliveryResponse)
-def update_delivery(
+async def update_delivery(
     delivery_id: int,
     delivery_data: DeliveryUpdate,
     db: Session = Depends(get_db),
@@ -452,7 +452,7 @@ def update_delivery(
     db.refresh(delivery)
     
     # Broadcast changement
-    manager.broadcast_to_all({
+    await manager.broadcast_to_all({
         "type": "delivery_updated",
         "delivery_id": delivery.id,
         "status": delivery.status
