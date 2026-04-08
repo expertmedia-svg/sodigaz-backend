@@ -32,8 +32,8 @@ class SageX3Service:
     
     def __init__(self, db: Session):
         self.db = db
-        self.mock_mode = settings.SAGE_X3_MOCK_MODE
-        self.sage_token = settings.SAGE_X3_PUSH_TOKEN
+        self.mock_mode = settings.SAGE_X3_PUSH_MODE == "mock"
+        self.sage_token = settings.SAGE_X3_INBOUND_TOKEN
         logger.info(f"🔌 SageX3Service initialized (mock_mode={self.mock_mode})")
     
     def validate_sage_token(self, token: str) -> bool:

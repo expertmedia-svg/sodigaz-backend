@@ -40,6 +40,11 @@ class MovementTypeEnum(str, enum.Enum):
     PREORDER = "preorder"
     ADJUSTMENT = "adjustment"
 
+
+class ProgramTypeEnum(str, enum.Enum):
+    DELIVERY = "DELIVERY"
+    COLLECTION = "COLLECTION"
+
 class User(Base):
     __tablename__ = "users"
     
@@ -56,6 +61,7 @@ class User(Base):
     depots = relationship("Depot", back_populates="manager")
     trucks = relationship("Truck", back_populates="driver")
     deliveries = relationship("Delivery", back_populates="driver")
+    programs = relationship("Program", back_populates="driver")
     preorders = relationship("Preorder", back_populates="user", foreign_keys="[Preorder.user_id]")
 
 class Depot(Base):
@@ -87,6 +93,7 @@ class Depot(Base):
     
     manager = relationship("User", back_populates="depots")
     deliveries = relationship("Delivery", back_populates="depot")
+    programs = relationship("Program", back_populates="depot")
     stocks = relationship("Stock", back_populates="depot")
     preorders = relationship("Preorder", back_populates="depot")
 
@@ -114,7 +121,100 @@ class Truck(Base):
     
     driver = relationship("User", back_populates="trucks")
     deliveries = relationship("Delivery", back_populates="truck")
+    programs = relationship("Program", back_populates="truck")
     gps_logs = relationship("GPSLog", back_populates="truck")
+
+
+class Program(Base):
+    __tablename__ = "programs"
+
+    id = Column(Integer, primary_key=True)
+    program_code = Column(String(100), unique=True, index=True, nullable=False)
+    program_type = Column(Enum(ProgramTypeEnum), default=ProgramTypeEnum.DELIVERY, nullable=False, index=True)
+    site_code = Column(String(100), nullable=True, index=True)
+    program_date = Column(DateTime, nullable=False, index=True)
+    program_time = Column(String(20), nullable=True)
+    depot_id = Column(Integer, ForeignKey("depots.id"), nullable=False, index=True)
+    truck_id = Column(Integer, ForeignKey("trucks.id"), nullable=True, index=True)
+    driver_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    transporter_name = Column(String(255), nullable=True)
+    source_system = Column(String(50), default="sage_x3", nullable=False)
+    source_updated_at = Column(DateTime, nullable=True)
+    status = Column(String(30), default="active", nullable=False, index=True)
+    sync_version = Column(Integer, default=1, nullable=False)
+    source_payload = Column(JSON, nullable=True)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+    depot = relationship("Depot", back_populates="programs")
+    truck = relationship("Truck", back_populates="programs")
+    driver = relationship("User", back_populates="programs")
+    lines = relationship("ProgramLine", back_populates="program", cascade="all, delete-orphan")
+    deliveries = relationship("Delivery", back_populates="program")
+
+
+class PricingRule(Base):
+    __tablename__ = "pricing_rules"
+
+    id = Column(Integer, primary_key=True)
+    product_code = Column(String(50), nullable=False, index=True)
+    product_label = Column(String(255), nullable=True)
+    depot_id = Column(Integer, ForeignKey("depots.id"), nullable=True, index=True)
+    unit_price = Column(Numeric(12, 2), nullable=False)
+    tax_rate = Column(Numeric(8, 4), nullable=False, default=0)
+    active = Column(Boolean, default=True, nullable=False, index=True)
+    valid_from = Column(DateTime, nullable=True)
+    valid_to = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+    depot = relationship("Depot")
+    program_lines = relationship("ProgramLine", back_populates="pricing_rule")
+    deliveries = relationship("Delivery", back_populates="pricing_rule")
+
+
+class ProgramLine(Base):
+    __tablename__ = "program_lines"
+
+    id = Column(Integer, primary_key=True)
+    program_id = Column(Integer, ForeignKey("programs.id"), nullable=False, index=True)
+    line_code = Column(String(100), nullable=False, index=True)
+    external_line_id = Column(String(100), nullable=True, index=True)
+    client_id = Column(String(100), nullable=True, index=True)
+    client_code = Column(String(100), nullable=True, index=True)
+    client_name = Column(String(255), nullable=False)
+    destination_address = Column(Text, nullable=True)
+    destination_latitude = Column(Float, nullable=True)
+    destination_longitude = Column(Float, nullable=True)
+    contact_name = Column(String(255), nullable=True)
+    contact_phone = Column(String(50), nullable=True)
+    product_code = Column(String(50), nullable=False, index=True)
+    product_label = Column(String(255), nullable=True)
+    article = Column(String(100), nullable=True)
+    zone = Column(String(255), nullable=True, index=True)
+    quantity_planned = Column(Integer, default=0, nullable=False)
+    quantity_delivered = Column(Integer, default=0, nullable=False)
+    quantity_collected = Column(Integer, default=0, nullable=False)
+    unit_price = Column(Numeric(12, 2), nullable=True)
+    tax_rate = Column(Numeric(8, 4), nullable=True)
+    subtotal_amount = Column(Numeric(12, 2), nullable=True)
+    tax_amount = Column(Numeric(12, 2), nullable=True)
+    total_amount = Column(Numeric(12, 2), nullable=True)
+    delivery_mode = Column(String(50), nullable=True)
+    collection_sheet = Column(String(100), nullable=True)
+    comment = Column(Text, nullable=True)
+    status = Column(String(30), default="pending", nullable=False, index=True)
+    pricing_rule_id = Column(Integer, ForeignKey("pricing_rules.id"), nullable=True, index=True)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+    program = relationship("Program", back_populates="lines")
+    pricing_rule = relationship("PricingRule", back_populates="program_lines")
+    delivery = relationship("Delivery", back_populates="program_line", uselist=False, foreign_keys="Delivery.program_line_id")
+
+    @property
+    def delivery_id(self):
+        return self.delivery.id if self.delivery else None
 
 class Delivery(Base):
     __tablename__ = "deliveries"
@@ -152,6 +252,17 @@ class Delivery(Base):
     scheduled_date = Column(DateTime)
     actual_start = Column(DateTime)
     actual_end = Column(DateTime)
+    program_type = Column(String(20), nullable=True, index=True)
+    program_id = Column(Integer, ForeignKey("programs.id"), nullable=True, index=True)
+    program_line_id = Column(Integer, ForeignKey("program_lines.id"), nullable=True, index=True)
+    pricing_rule_id = Column(Integer, ForeignKey("pricing_rules.id"), nullable=True, index=True)
+    delivered_quantity_total = Column(Integer, default=0, nullable=False)
+    collected_quantity_total = Column(Integer, default=0, nullable=False)
+    unit_price_applied = Column(Numeric(12, 2), nullable=True)
+    tax_rate_applied = Column(Numeric(8, 4), nullable=True)
+    subtotal_amount = Column(Numeric(12, 2), nullable=True)
+    tax_amount = Column(Numeric(12, 2), nullable=True)
+    total_amount = Column(Numeric(12, 2), nullable=True)
     start_latitude = Column(Float)
     start_longitude = Column(Float)
     end_latitude = Column(Float)
@@ -163,6 +274,9 @@ class Delivery(Base):
     depot = relationship("Depot", back_populates="deliveries")  # Renommé de destination_depot
     driver = relationship("User", back_populates="deliveries")
     gps_logs = relationship("GPSLog", back_populates="delivery")
+    program = relationship("Program", back_populates="deliveries")
+    program_line = relationship("ProgramLine", back_populates="delivery", foreign_keys=[program_line_id])
+    pricing_rule = relationship("PricingRule", back_populates="deliveries")
 
 class Stock(Base):
     __tablename__ = "stocks"

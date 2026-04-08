@@ -8,6 +8,8 @@ from app.models import (
     User,
     Delivery,
     Depot,
+    Program,
+    ProgramTypeEnum,
     Truck,
     DeliveryStatusEnum,
     GPSLog,
@@ -20,6 +22,7 @@ from app.models import (
     IntegrationOutbox,
 )
 from app.auth import get_current_user, verify_password, create_access_token
+from app.services.pricing_service import resolve_program_line_amount
 from app.time_utils import utc_now, utc_now_iso
 
 router = APIRouter()
@@ -41,7 +44,8 @@ class DeliveryConfirmationPayload(BaseModel):
     confirmation_id: str
     delivery_id: int
     product: str
-    quantity_delivered: int
+    quantity_delivered: int = 0
+    quantity_collected: int = 0
     quantity_empty_collected: int = 0
     customer: Optional[str] = None
     customer_phone: Optional[str] = None
@@ -103,6 +107,9 @@ def _serialize_mission(delivery: Delivery, depot: Optional[Depot]) -> dict[str, 
     return {
         "id": delivery.id,
         "assignment_version": 1,
+        "program_code": delivery.program.program_code if delivery.program else None,
+        "program_line_id": delivery.program_line.id if delivery.program_line else None,
+        "program_type": delivery.program_type or (delivery.program.program_type.value if delivery.program else ProgramTypeEnum.DELIVERY.value),
         "status": delivery.status.value,
         "scheduled_time": delivery.scheduled_date.isoformat() if delivery.scheduled_date else None,
         "depot_id": delivery.depot_id,
@@ -117,8 +124,17 @@ def _serialize_mission(delivery: Delivery, depot: Optional[Depot]) -> dict[str, 
         "truck_id": delivery.truck_id,
         "quantity_6kg": delivery.quantity_6kg,
         "quantity_12kg": delivery.quantity_12kg,
+        "quantity_collected": delivery.collected_quantity_total,
         "quantity_6kg_vide_recupere": delivery.quantity_6kg_vide_recupere or 0,
         "quantity_12kg_vide_recupere": delivery.quantity_12kg_vide_recupere or 0,
+        "article": delivery.program_line.article if delivery.program_line else None,
+        "zone": delivery.program_line.zone if delivery.program_line else None,
+        "delivery_mode": delivery.program_line.delivery_mode if delivery.program_line else None,
+        "collection_sheet": delivery.program_line.collection_sheet if delivery.program_line else None,
+        "comment": delivery.program_line.comment if delivery.program_line else None,
+        "unit_price": float(delivery.unit_price_applied) if delivery.unit_price_applied is not None else None,
+        "tax_rate": float(delivery.tax_rate_applied) if delivery.tax_rate_applied is not None else None,
+        "total_amount": float(delivery.total_amount) if delivery.total_amount is not None else None,
         "actual_start": delivery.actual_start.isoformat() if delivery.actual_start else None,
         "actual_end": delivery.actual_end.isoformat() if delivery.actual_end else None,
         "notes": delivery.notes,
@@ -129,6 +145,60 @@ def _append_delivery_note(delivery: Delivery, note: str) -> None:
     if not note:
         return
     delivery.notes = f"{delivery.notes}\n{note}".strip() if delivery.notes else note
+
+
+def _serialize_driver_program(program: Program) -> dict[str, Any]:
+    return {
+        "program_code": program.program_code,
+        "program_type": program.program_type,
+        "site_code": program.site_code,
+        "program_date": program.program_date.isoformat() if program.program_date else None,
+        "program_time": program.program_time,
+        "depot_id": program.depot_id,
+        "depot_name": program.depot.name if program.depot else None,
+        "truck_id": program.truck_id,
+        "truck_license_plate": program.truck.license_plate if program.truck else None,
+        "transporter_name": program.transporter_name,
+        "status": program.status,
+        "lines": [
+            {
+                "line_id": line.id,
+                "line_code": line.line_code,
+                "client_id": line.client_id,
+                "client_name": line.client_name,
+                "destination_address": line.destination_address,
+                "product_code": line.product_code,
+                "product_label": line.product_label,
+                "article": line.article,
+                "zone": line.zone,
+                "quantity_planned": line.quantity_planned,
+                "quantity_delivered": line.quantity_delivered,
+                "quantity_collected": line.quantity_collected,
+                "delivery_mode": line.delivery_mode,
+                "collection_sheet": line.collection_sheet,
+                "comment": line.comment,
+                "status": line.status,
+                "unit_price": float(line.unit_price) if line.unit_price is not None else None,
+                "tax_rate": float(line.tax_rate) if line.tax_rate is not None else None,
+                "total_amount": float(line.total_amount) if line.total_amount is not None else None,
+                "delivery_id": line.delivery.id if line.delivery else None,
+            }
+            for line in sorted(program.lines, key=lambda item: item.line_code)
+        ],
+    }
+
+
+def _load_driver_today_programs(db: Session, driver_id: int) -> list[dict[str, Any]]:
+    programs = (
+        db.query(Program)
+        .filter(
+            Program.driver_id == driver_id,
+            Program.status.in_(["active", "in_progress"]),
+        )
+        .order_by(Program.program_date.asc(), Program.updated_at.desc())
+        .all()
+    )
+    return [_serialize_driver_program(program) for program in programs]
 
 def _register_conflict(
     db: Session,
@@ -212,15 +282,6 @@ def _process_delivery_confirmation(
             retryable=False,
         )
 
-    if payload.quantity_delivered <= 0:
-        return _build_operation_result(
-            operation.idempotency_key,
-            "rejected",
-            "INVALID_QUANTITY",
-            "La quantite livree doit etre strictement positive.",
-            retryable=False,
-        )
-
     delivery = db.query(Delivery).filter(
         Delivery.id == payload.delivery_id,
         Delivery.driver_id == driver_id,
@@ -234,6 +295,18 @@ def _process_delivery_confirmation(
             "La livraison n'existe pas ou n'est pas assignee a ce livreur.",
             retryable=False,
             delivery_id=payload.delivery_id,
+        )
+
+    program_type = (delivery.program_type or (delivery.program.program_type.value if delivery.program else ProgramTypeEnum.DELIVERY.value)).upper()
+    confirmed_quantity = payload.quantity_collected if program_type == ProgramTypeEnum.COLLECTION.value else payload.quantity_delivered
+
+    if confirmed_quantity <= 0:
+        return _build_operation_result(
+            operation.idempotency_key,
+            "rejected",
+            "INVALID_QUANTITY",
+            "La quantite confirmee doit etre strictement positive.",
+            retryable=False,
         )
 
     if delivery.status == DeliveryStatusEnum.CANCELLED:
@@ -290,6 +363,55 @@ def _process_delivery_confirmation(
             server_delivery_status=delivery.status.value,
         )
 
+    amount_summary = None
+    if delivery.program_line is not None and program_type == ProgramTypeEnum.DELIVERY.value:
+        pricing_rule, amount_summary = resolve_program_line_amount(
+            db,
+            program_line=delivery.program_line,
+            quantity_delivered=confirmed_quantity,
+            depot_id=delivery.depot_id,
+        )
+        delivery.program_line.quantity_delivered = confirmed_quantity
+        delivery.program_line.pricing_rule_id = pricing_rule.id if pricing_rule else None
+        delivery.program_line.unit_price = amount_summary["unit_price"]
+        delivery.program_line.tax_rate = amount_summary["tax_rate"]
+        delivery.program_line.subtotal_amount = amount_summary["subtotal_amount"]
+        delivery.program_line.tax_amount = amount_summary["tax_amount"]
+        delivery.program_line.total_amount = amount_summary["total_amount"]
+        delivery.program_line.status = (
+            "delivered"
+            if confirmed_quantity >= delivery.program_line.quantity_planned
+            else "partial"
+        )
+        delivery.pricing_rule_id = pricing_rule.id if pricing_rule else None
+        delivery.delivered_quantity_total = confirmed_quantity
+        delivery.unit_price_applied = amount_summary["unit_price"]
+        delivery.tax_rate_applied = amount_summary["tax_rate"]
+        delivery.subtotal_amount = amount_summary["subtotal_amount"]
+        delivery.tax_amount = amount_summary["tax_amount"]
+        delivery.total_amount = amount_summary["total_amount"]
+    elif delivery.program_line is not None:
+        collected_quantity = payload.quantity_collected or payload.quantity_empty_collected
+        delivery.program_line.quantity_collected = collected_quantity
+        delivery.program_line.status = (
+            "collected"
+            if collected_quantity >= delivery.program_line.quantity_planned
+            else "partial"
+        )
+        delivery.collected_quantity_total = collected_quantity
+        delivery.pricing_rule_id = None
+        delivery.unit_price_applied = None
+        delivery.tax_rate_applied = None
+        delivery.subtotal_amount = None
+        delivery.tax_amount = None
+        delivery.total_amount = None
+
+    if program_type == ProgramTypeEnum.COLLECTION.value:
+        delivery.collected_quantity_total = payload.quantity_collected or payload.quantity_empty_collected
+        delivery.delivered_quantity_total = 0
+    else:
+        delivery.delivered_quantity_total = confirmed_quantity
+
     delivery.status = DeliveryStatusEnum.COMPLETED
     if delivery.actual_start is None:
         delivery.actual_start = payload.delivered_at
@@ -309,12 +431,13 @@ def _process_delivery_confirmation(
             )
         )
 
+    collected_empty = payload.quantity_collected or payload.quantity_empty_collected
     if product_type == "GAZ_6KG":
-        delivery.quantity_6kg_vide_recupere = payload.quantity_empty_collected
+        delivery.quantity_6kg_vide_recupere = collected_empty
     else:
-        delivery.quantity_12kg_vide_recupere = payload.quantity_empty_collected
+        delivery.quantity_12kg_vide_recupere = collected_empty
 
-    delivery.echange_effectue = payload.quantity_empty_collected > 0
+    delivery.echange_effectue = collected_empty > 0
 
     if payload.notes:
         _append_delivery_note(delivery, f"[offline_sync] {payload.notes}")
@@ -327,8 +450,8 @@ def _process_delivery_confirmation(
         source="offline_sync",
         idempotency_key=operation.idempotency_key,
         product_type=product_type,
-        quantity_delivered=payload.quantity_delivered,
-        quantity_empty_collected=payload.quantity_empty_collected,
+        quantity_delivered=confirmed_quantity,
+        quantity_empty_collected=collected_empty,
         confirmation_mode=payload.confirmation_mode,
         customer_reference=payload.customer,
         confirmed_by=payload.confirmed_by,
@@ -344,15 +467,47 @@ def _process_delivery_confirmation(
     db.add(event)
     db.flush()
 
+    db.add(
+        IntegrationOutbox(
+            event_type="COLLECTION_CONFIRMED" if program_type == ProgramTypeEnum.COLLECTION.value else "DELIVERY_CONFIRMED",
+            aggregate_type="delivery",
+            aggregate_id=str(delivery.id),
+            external_message_id=f"delivery_confirmation:{payload.confirmation_id}",
+            payload_json={
+                "delivery_id": delivery.id,
+                "program_code": delivery.program.program_code if delivery.program else None,
+                "program_type": program_type,
+                "program_line_id": delivery.program_line.id if delivery.program_line else None,
+                "confirmation_id": payload.confirmation_id,
+                "product": product_type,
+                "quantity": confirmed_quantity,
+                "quantity_delivered": confirmed_quantity if program_type == ProgramTypeEnum.DELIVERY.value else 0,
+                "quantity_collected": confirmed_quantity if program_type == ProgramTypeEnum.COLLECTION.value else 0,
+                "quantity_empty_collected": collected_empty,
+                "delivered_at": payload.delivered_at.isoformat(),
+                "total_amount": str(amount_summary["total_amount"]) if amount_summary else None,
+                "tax_amount": str(amount_summary["tax_amount"]) if amount_summary else None,
+                "unit_price": str(amount_summary["unit_price"]) if amount_summary else None,
+                "tax_rate": str(amount_summary["tax_rate"]) if amount_summary else None,
+            },
+            status="pending",
+        )
+    )
+
     return _build_operation_result(
         operation.idempotency_key,
         "accepted",
         "SYNCED",
-        "Confirmation de livraison synchronisee.",
+        "Confirmation de collecte synchronisee." if program_type == ProgramTypeEnum.COLLECTION.value else "Confirmation de livraison synchronisee.",
         retryable=False,
         delivery_id=delivery.id,
         server_delivery_status=delivery.status.value,
         server_event_id=f"dconf_{event.id}",
+        amount_summary={
+            "subtotal_amount": str(amount_summary["subtotal_amount"]),
+            "tax_amount": str(amount_summary["tax_amount"]),
+            "total_amount": str(amount_summary["total_amount"]),
+        } if amount_summary else None,
     )
 
 
@@ -519,8 +674,19 @@ def get_driver_bootstrap(
             "depot_address": f"{depot.latitude}, {depot.longitude}" if depot else None,
             "quantity_6kg": delivery.quantity_6kg,
             "quantity_12kg": delivery.quantity_12kg,
+            "quantity_collected": delivery.collected_quantity_total,
             "quantity_6kg_vide_recupere": delivery.quantity_6kg_vide_recupere or 0,
             "quantity_12kg_vide_recupere": delivery.quantity_12kg_vide_recupere or 0,
+            "program_type": delivery.program_type or (delivery.program.program_type.value if delivery.program else ProgramTypeEnum.DELIVERY.value),
+            "article": delivery.program_line.article if delivery.program_line else None,
+            "zone": delivery.program_line.zone if delivery.program_line else None,
+            "delivery_mode": delivery.program_line.delivery_mode if delivery.program_line else None,
+            "collection_sheet": delivery.program_line.collection_sheet if delivery.program_line else None,
+            "comment": delivery.program_line.comment if delivery.program_line else None,
+            "program_code": delivery.program.program_code if delivery.program else None,
+            "unit_price": float(delivery.unit_price_applied) if delivery.unit_price_applied is not None else None,
+            "tax_rate": float(delivery.tax_rate_applied) if delivery.tax_rate_applied is not None else None,
+            "total_amount": float(delivery.total_amount) if delivery.total_amount is not None else None,
         })
 
     truck_stock = []
@@ -555,9 +721,11 @@ def get_driver_bootstrap(
         "truck_stock": truck_stock,
         "reference_data": {
             "products": ["GAZ_6KG", "GAZ_12KG"],
-            "sync_policy_version": 1,
+            "program_types": ["DELIVERY", "COLLECTION"],
+            "sync_policy_version": 3,
             "max_delivery_validation_radius_m": 500,
         },
+        "today_programs": _load_driver_today_programs(db, current_user.id),
         "sync": {
             "open_conflicts": open_conflicts,
             "last_batch_id": latest_batch.batch_id if latest_batch else None,
@@ -728,6 +896,14 @@ def get_driver_sync_conflicts(
         for conflict in conflicts
     ]
 
+
+@router.get("/programs/today")
+def get_today_programs(
+    current_user: User = Depends(require_driver_role),
+    db: Session = Depends(get_db)
+):
+    return _load_driver_today_programs(db, current_user.id)
+
 @router.get("/my-missions")
 def get_my_missions(
     current_user: User = Depends(require_driver_role),
@@ -738,26 +914,14 @@ def get_my_missions(
     - Missions créées localement (source_type='user_created')
     - Missions du cahier de charge Sage X3 (source_type='sage_inbound', status='approved')
     """
-    # Missions classiques (user_created)
     deliveries = db.query(Delivery).filter(
         Delivery.driver_id == current_user.id,
-        Delivery.source_type == "user_created",
         Delivery.status.in_([DeliveryStatusEnum.PENDING, DeliveryStatusEnum.IN_PROGRESS])
     ).order_by(Delivery.scheduled_date).all()
-    
-    # Missions Sage X3 approuvées
-    sage_missions = db.query(Delivery).filter(
-        Delivery.driver_id == current_user.id,
-        Delivery.source_type == "sage_inbound",
-        Delivery.external_status == SageMissionStatusEnum.APPROVED,
-        Delivery.status != DeliveryStatusEnum.COMPLETED
-    ).order_by(Delivery.scheduled_date).all()
-    
-    # Combiner et formatter
-    all_missions = deliveries + sage_missions
+
     result = []
-    
-    for delivery in all_missions:
+
+    for delivery in deliveries:
         depot = db.query(Depot).filter(Depot.id == delivery.depot_id).first()
         
         result.append({
@@ -798,8 +962,7 @@ def get_sage_missions(
     """
     sage_missions = db.query(Delivery).filter(
         Delivery.driver_id == current_user.id,
-        Delivery.source_type == "sage_inbound",
-        Delivery.external_status == SageMissionStatusEnum.APPROVED,
+        Delivery.source_type.in_(["sage_inbound", "sage_program"]),
         Delivery.status != DeliveryStatusEnum.COMPLETED
     ).order_by(Delivery.scheduled_date).all()
     

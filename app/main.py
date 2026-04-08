@@ -2,7 +2,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.database import Base, engine
-from app.routers import auth, admin, ravitailleur, depot, user, user_public, driver, tracking, logistics
+from app.routers import auth, admin, ravitailleur, depot, user, user_public, driver, tracking, logistics, integration
 from app.websocket_manager import manager
 from app import models  # Import des modèles AVANT create_all
 
@@ -31,6 +31,7 @@ app.include_router(depot.router)
 app.include_router(driver.router, prefix="/api/driver", tags=["driver"])
 app.include_router(tracking.router, prefix="/api/tracking", tags=["tracking"])
 app.include_router(logistics.router)
+app.include_router(integration.router)
 app.include_router(user.router)
 app.include_router(user_public.router)  # Nouveau router public sans auth
 

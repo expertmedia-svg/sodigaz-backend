@@ -26,6 +26,10 @@ class Settings:
     SAGE_X3_BASE_URL = os.getenv("SAGE_X3_BASE_URL", "")
     SAGE_X3_API_KEY = os.getenv("SAGE_X3_API_KEY", "")
     SAGE_X3_PUSH_MODE = os.getenv("SAGE_X3_PUSH_MODE", "mock")
+    SAGE_X3_INBOUND_TOKEN = os.getenv(
+        "SAGE_X3_INBOUND_TOKEN",
+        os.getenv("SAGE_X3_PUSH_TOKEN", "test-token-123"),
+    )
     SAGE_X3_TIMEOUT_SECONDS = int(os.getenv("SAGE_X3_TIMEOUT_SECONDS", "15"))
     INTEGRATION_OUTBOX_MAX_RETRIES = int(os.getenv("INTEGRATION_OUTBOX_MAX_RETRIES", "3"))
     SAGE_X3_AUTH_SCHEME = os.getenv("SAGE_X3_AUTH_SCHEME", "bearer")
@@ -33,5 +37,7 @@ class Settings:
     SAGE_X3_DELIVERY_ENDPOINT = os.getenv("SAGE_X3_DELIVERY_ENDPOINT", "/deliveries")
     SAGE_X3_STOCK_MOVEMENT_ENDPOINT = os.getenv("SAGE_X3_STOCK_MOVEMENT_ENDPOINT", "/stock-movements")
     SAGE_X3_HEALTH_ENDPOINT = os.getenv("SAGE_X3_HEALTH_ENDPOINT", "/health")
+    SAGE_X3_PUSH_TOKEN = SAGE_X3_INBOUND_TOKEN
+    SAGE_X3_MOCK_MODE = SAGE_X3_PUSH_MODE == "mock"
 
 settings = Settings()
