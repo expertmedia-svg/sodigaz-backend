@@ -1,16 +1,7 @@
-"""
-Service de gestion de l'intégration Sage X3
+"""Service de gestion de l'intégration Sage X3."""
 
-Gère:
-- Réception des missions Sage X3
-- Validation des authentifications  
-- Création de deliveries à partir des missions
-- Approbation/rejet des missions
-- Synchronisation des statuts
-"""
-
+from collections.abc import Mapping
 from typing import Optional, List, Dict, Any
-from datetime import datetime
 from sqlalchemy.orm import Session
 from app.models import (
     Delivery,
@@ -35,19 +26,60 @@ class SageX3Service:
         self.mock_mode = settings.SAGE_X3_PUSH_MODE == "mock"
         self.sage_token = settings.SAGE_X3_INBOUND_TOKEN
         logger.info(f"🔌 SageX3Service initialized (mock_mode={self.mock_mode})")
-    
-    def validate_sage_token(self, token: str) -> bool:
-        """Valide le token Sage X3 du header X-Sage-X3-Token"""
+
+    def get_missing_runtime_configuration(self) -> list[str]:
+        missing = []
+        if not settings.SAGE_X3_BASE_URL:
+            missing.append("SAGE_X3_BASE_URL")
+        if not settings.SAGE_X3_INBOUND_TOKEN:
+            missing.append("SAGE_X3_INBOUND_TOKEN")
+        if not settings.SAGE_X3_INBOUND_AUTH_HEADER:
+            missing.append("SAGE_X3_INBOUND_AUTH_HEADER")
+        if settings.SAGE_X3_PUSH_MODE != "mock" and not settings.SAGE_X3_API_KEY:
+            missing.append("SAGE_X3_API_KEY")
+        return missing
+
+    def build_outbound_auth_headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if settings.SAGE_X3_API_KEY:
+            if settings.SAGE_X3_AUTH_SCHEME.lower() == "bearer":
+                headers[settings.SAGE_X3_AUTH_HEADER] = f"Bearer {settings.SAGE_X3_API_KEY}"
+            else:
+                headers[settings.SAGE_X3_AUTH_HEADER] = settings.SAGE_X3_API_KEY
+        return headers
+
+    def validate_inbound_headers(self, headers: Mapping[str, str]) -> bool:
+        """Valide l'authentification entrante envoyée par Sage X3."""
         if self.mock_mode:
             logger.info(f"🧪 Mock mode: accepting any token")
             return True
-        
-        is_valid = token == self.sage_token
+
+        scheme = settings.SAGE_X3_INBOUND_AUTH_SCHEME.lower().strip()
+        configured_header = (settings.SAGE_X3_INBOUND_AUTH_HEADER or "X-Sage-X3-Token").lower().strip()
+        raw_value = headers.get(configured_header) or headers.get("x-sage-x3-token")
+
+        if not raw_value:
+            logger.warning("❌ Missing inbound Sage auth header")
+            return False
+
+        candidate = raw_value.strip()
+        if scheme == "bearer":
+            prefix = "bearer "
+            if not candidate.lower().startswith(prefix):
+                logger.warning("❌ Invalid inbound Sage bearer format")
+                return False
+            candidate = candidate[len(prefix):].strip()
+
+        is_valid = candidate == (self.sage_token or "")
         if is_valid:
             logger.info(f"✅ Valid Sage X3 token")
         else:
             logger.warning(f"❌ Invalid Sage X3 token")
         return is_valid
+
+    def validate_sage_token(self, token: str) -> bool:
+        """Compat legacy pour les appels existants basés sur X-Sage-X3-Token."""
+        return self.validate_inbound_headers({"x-sage-x3-token": token})
     
     def receive_sage_mission(
         self,
@@ -255,9 +287,16 @@ class SageX3Service:
     
     def get_health_status(self) -> Dict[str, Any]:
         """Retourne le status de l'intégration Sage X3"""
+        missing = self.get_missing_runtime_configuration()
         return {
-            "status": "healthy",
+            "status": "healthy" if not missing or self.mock_mode else "needs_configuration",
             "mode": "mock" if self.mock_mode else "http",
             "detail": "Mock mode enabled - no real Sage X3 calls" if self.mock_mode else "Production mode - real Sage X3 API",
+            "base_url": settings.SAGE_X3_BASE_URL or None,
+            "inbound_auth_header": settings.SAGE_X3_INBOUND_AUTH_HEADER,
+            "inbound_auth_scheme": settings.SAGE_X3_INBOUND_AUTH_SCHEME,
+            "outbound_auth_header": settings.SAGE_X3_AUTH_HEADER,
+            "outbound_auth_scheme": settings.SAGE_X3_AUTH_SCHEME,
+            "missing_configuration": missing,
             "timestamp": utc_now().isoformat()
         }

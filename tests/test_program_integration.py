@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 from decimal import Decimal
 
+from app.config import settings
 from app.auth import hash_password
 from app.models import (
     Delivery,
@@ -11,6 +12,7 @@ from app.models import (
     Program,
     ProgramLine,
     RoleEnum,
+    SageMissionStatusEnum,
     Truck,
     User,
 )
@@ -265,6 +267,527 @@ def test_collection_program_upsert_and_confirmation_creates_collection_event(cli
     ).one()
     assert outbox_event.event_type == "COLLECTION_CONFIRMED"
     assert outbox_event.payload_json["quantity_collected"] == 6
+
+
+def test_bidirectional_program_flow_completes_program_and_removes_it_from_driver_today_view(client, db):
+    driver, depot, truck = _seed_program_context(db, suffix="bidirectional-flow")
+    db.add(
+        PricingRule(
+            product_code="GAZ_12KG",
+            product_label="Gaz 12 kg",
+            depot_id=depot.id,
+            unit_price=Decimal("6500.00"),
+            tax_rate=Decimal("0.1800"),
+            active=True,
+        )
+    )
+    db.commit()
+
+    payload = _program_payload(
+        program_code="PRG-BIDIR-001",
+        depot_id=depot.id,
+        truck_id=truck.id,
+        driver_id=driver.id,
+        sync_version=1,
+        lines=[
+            {
+                "line_code": "L1",
+                "external_line_id": "EXT-BIDIR-1",
+                "client_code": "CLI-BIDIR-01",
+                "client_name": "Client Bidirectionnel",
+                "destination_address": "Secteur 12",
+                "product_code": "GAZ_12KG",
+                "product_label": "Gaz 12 kg",
+                "quantity_planned": 12,
+            }
+        ],
+    )
+
+    create_response = client.post(
+        "/api/integration/sage/programs",
+        headers={"x-sage-x3-token": "test-token-123"},
+        json=payload,
+    )
+    assert create_response.status_code == 200
+
+    token = _login_token(client, username="driver-bidirectional-flow")
+
+    before_bootstrap = client.get(
+        "/api/driver/bootstrap",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert before_bootstrap.status_code == 200
+    assert len(before_bootstrap.json()["assignments"]) == 1
+    assert len(before_bootstrap.json()["today_programs"]) == 1
+
+    program = db.query(Program).filter(Program.program_code == "PRG-BIDIR-001").one()
+    line = db.query(ProgramLine).filter(ProgramLine.external_line_id == "EXT-BIDIR-1").one()
+    delivery = db.query(Delivery).filter(Delivery.program_id == program.id).one()
+
+    sync_response = client.post(
+        "/api/driver/sync/batch",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "device_id": "SM-A057-bidir-001",
+            "driver_id": driver.id,
+            "batch_id": "batch-bidir-confirm-001",
+            "sent_at": "2026-04-09T09:00:00Z",
+            "operations": [
+                {
+                    "type": "delivery_confirmation",
+                    "idempotency_key": "DRV-BIDIR-CONF-001",
+                    "payload": {
+                        "confirmation_id": "conf-bidir-001",
+                        "delivery_id": delivery.id,
+                        "product": "GAZ_12KG",
+                        "quantity_delivered": 12,
+                        "quantity_empty_collected": 10,
+                        "customer": "CLI-BIDIR-01",
+                        "confirmed_by": "Client Bidirectionnel",
+                        "customer_phone": "72000011",
+                        "confirmation_mode": "signature",
+                        "signature_base64": "base64-signature",
+                        "gps": {
+                            "latitude": 12.371,
+                            "longitude": -1.519,
+                            "accuracy": 7.5
+                        },
+                        "delivered_at": "2026-04-09T08:55:00Z"
+                    }
+                }
+            ]
+        },
+    )
+
+    assert sync_response.status_code == 200
+    sync_payload = sync_response.json()
+    assert sync_payload["summary"]["accepted"] == 1
+    assert sync_payload["sage_outbox"]["sent"] >= 1
+    assert sync_payload["sage_outbox"]["failed"] == 0
+
+    db.refresh(program)
+    db.refresh(line)
+    db.refresh(delivery)
+
+    assert line.quantity_delivered == 12
+    assert line.status == "delivered"
+    assert delivery.status == DeliveryStatusEnum.COMPLETED
+    assert delivery.delivered_quantity_total == 12
+    assert delivery.external_status == SageMissionStatusEnum.SYNCED
+    assert delivery.external_sync_at is not None
+    assert program.status == "completed"
+
+    confirmation_event = db.query(IntegrationOutbox).filter(
+        IntegrationOutbox.external_message_id == "delivery_confirmation:conf-bidir-001"
+    ).one()
+    assert confirmation_event.status == "sent"
+    assert confirmation_event.payload_json["program_code"] == "PRG-BIDIR-001"
+    assert confirmation_event.payload_json["program_line_id"] == line.id
+
+    after_bootstrap = client.get(
+        "/api/driver/bootstrap",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert after_bootstrap.status_code == 200
+    assert after_bootstrap.json()["assignments"] == []
+    assert after_bootstrap.json()["today_programs"] == []
+
+
+def test_partial_driver_validation_keeps_program_in_progress_until_all_lines_are_done(client, db):
+    driver, depot, truck = _seed_program_context(db, suffix="partial-flow")
+    db.add(
+        PricingRule(
+            product_code="GAZ_12KG",
+            product_label="Gaz 12 kg",
+            depot_id=depot.id,
+            unit_price=Decimal("6500.00"),
+            tax_rate=Decimal("0.1800"),
+            active=True,
+        )
+    )
+    db.commit()
+
+    payload = _program_payload(
+        program_code="PRG-PARTIAL-001",
+        depot_id=depot.id,
+        truck_id=truck.id,
+        driver_id=driver.id,
+        sync_version=1,
+        lines=[
+            {
+                "line_code": "L1",
+                "external_line_id": "EXT-PARTIAL-1",
+                "client_code": "CLI-PART-01",
+                "client_name": "Client Partiel A",
+                "destination_address": "Secteur 14",
+                "product_code": "GAZ_12KG",
+                "product_label": "Gaz 12 kg",
+                "quantity_planned": 12,
+            },
+            {
+                "line_code": "L2",
+                "external_line_id": "EXT-PARTIAL-2",
+                "client_code": "CLI-PART-02",
+                "client_name": "Client Partiel B",
+                "destination_address": "Secteur 15",
+                "product_code": "GAZ_6KG",
+                "product_label": "Gaz 6 kg",
+                "quantity_planned": 8,
+                "unit_price": "3000.00",
+                "tax_rate": "0.10",
+            },
+        ],
+    )
+
+    create_response = client.post(
+        "/api/integration/sage/programs",
+        headers={"x-sage-x3-token": "test-token-123"},
+        json=payload,
+    )
+    assert create_response.status_code == 200
+
+    token = _login_token(client, username="driver-partial-flow")
+
+    before_bootstrap = client.get(
+        "/api/driver/bootstrap",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert before_bootstrap.status_code == 200
+    assert len(before_bootstrap.json()["assignments"]) == 2
+    assert len(before_bootstrap.json()["today_programs"]) == 1
+    assert before_bootstrap.json()["today_programs"][0]["status"] == "active"
+
+    program = db.query(Program).filter(Program.program_code == "PRG-PARTIAL-001").one()
+    first_line = db.query(ProgramLine).filter(ProgramLine.external_line_id == "EXT-PARTIAL-1").one()
+    second_line = db.query(ProgramLine).filter(ProgramLine.external_line_id == "EXT-PARTIAL-2").one()
+    first_delivery = db.query(Delivery).filter(Delivery.program_line_id == first_line.id).one()
+    second_delivery = db.query(Delivery).filter(Delivery.program_line_id == second_line.id).one()
+
+    sync_response = client.post(
+        "/api/driver/sync/batch",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "device_id": "SM-A057-partial-001",
+            "driver_id": driver.id,
+            "batch_id": "batch-partial-confirm-001",
+            "sent_at": "2026-04-09T10:00:00Z",
+            "operations": [
+                {
+                    "type": "delivery_confirmation",
+                    "idempotency_key": "DRV-PARTIAL-CONF-001",
+                    "payload": {
+                        "confirmation_id": "conf-partial-001",
+                        "delivery_id": first_delivery.id,
+                        "product": "GAZ_12KG",
+                        "quantity_delivered": 12,
+                        "quantity_empty_collected": 12,
+                        "customer": "CLI-PART-01",
+                        "confirmed_by": "Client Partiel A",
+                        "customer_phone": "72000021",
+                        "confirmation_mode": "signature",
+                        "signature_base64": "base64-signature",
+                        "gps": {
+                            "latitude": 12.371,
+                            "longitude": -1.519,
+                            "accuracy": 6.5
+                        },
+                        "delivered_at": "2026-04-09T09:55:00Z"
+                    }
+                }
+            ]
+        },
+    )
+
+    assert sync_response.status_code == 200
+    sync_payload = sync_response.json()
+    assert sync_payload["summary"]["accepted"] == 1
+    assert sync_payload["sage_outbox"]["sent"] >= 1
+    assert sync_payload["sage_outbox"]["failed"] == 0
+
+    db.refresh(program)
+    db.refresh(first_line)
+    db.refresh(second_line)
+    db.refresh(first_delivery)
+    db.refresh(second_delivery)
+
+    assert first_line.status == "delivered"
+    assert first_line.quantity_delivered == 12
+    assert first_delivery.status == DeliveryStatusEnum.COMPLETED
+    assert first_delivery.external_status == SageMissionStatusEnum.SYNCED
+
+    assert second_line.status == "pending"
+    assert second_delivery.status == DeliveryStatusEnum.PENDING
+    assert program.status == "in_progress"
+
+    after_bootstrap = client.get(
+        "/api/driver/bootstrap",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert after_bootstrap.status_code == 200
+    bootstrap_payload = after_bootstrap.json()
+    assert len(bootstrap_payload["assignments"]) == 1
+    assert bootstrap_payload["assignments"][0]["id"] == second_delivery.id
+    assert len(bootstrap_payload["today_programs"]) == 1
+    assert bootstrap_payload["today_programs"][0]["status"] == "in_progress"
+
+    line_statuses = {
+        line["line_code"]: line["status"]
+        for line in bootstrap_payload["today_programs"][0]["lines"]
+    }
+    assert line_statuses == {"L1": "delivered", "L2": "pending"}
+
+
+def test_outbound_sage_failure_sets_external_error_but_keeps_driver_flow_consistent(client, db, monkeypatch):
+    from app.services import outbox_worker
+
+    driver, depot, truck = _seed_program_context(db, suffix="sage-failure")
+    db.add(
+        PricingRule(
+            product_code="GAZ_12KG",
+            product_label="Gaz 12 kg",
+            depot_id=depot.id,
+            unit_price=Decimal("6500.00"),
+            tax_rate=Decimal("0.1800"),
+            active=True,
+        )
+    )
+    db.commit()
+
+    payload = _program_payload(
+        program_code="PRG-FAIL-001",
+        depot_id=depot.id,
+        truck_id=truck.id,
+        driver_id=driver.id,
+        sync_version=1,
+        lines=[
+            {
+                "line_code": "L1",
+                "external_line_id": "EXT-FAIL-1",
+                "client_code": "CLI-FAIL-01",
+                "client_name": "Client Echec Sage",
+                "destination_address": "Secteur 16",
+                "product_code": "GAZ_12KG",
+                "product_label": "Gaz 12 kg",
+                "quantity_planned": 12,
+            }
+        ],
+    )
+
+    create_response = client.post(
+        "/api/integration/sage/programs",
+        headers={"x-sage-x3-token": "test-token-123"},
+        json=payload,
+    )
+    assert create_response.status_code == 200
+
+    token = _login_token(client, username="driver-sage-failure")
+    program = db.query(Program).filter(Program.program_code == "PRG-FAIL-001").one()
+    line = db.query(ProgramLine).filter(ProgramLine.external_line_id == "EXT-FAIL-1").one()
+    delivery = db.query(Delivery).filter(Delivery.program_id == program.id).one()
+
+    monkeypatch.setattr(settings, "SAGE_X3_PUSH_MODE", "http")
+
+    def _boom(event, client):
+        raise RuntimeError("Sage unreachable for test")
+
+    monkeypatch.setattr(outbox_worker, "_send_to_sage_x3", _boom)
+
+    sync_response = client.post(
+        "/api/driver/sync/batch",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "device_id": "SM-A057-failure-001",
+            "driver_id": driver.id,
+            "batch_id": "batch-failure-confirm-001",
+            "sent_at": "2026-04-09T11:00:00Z",
+            "operations": [
+                {
+                    "type": "delivery_confirmation",
+                    "idempotency_key": "DRV-FAIL-CONF-001",
+                    "payload": {
+                        "confirmation_id": "conf-failure-001",
+                        "delivery_id": delivery.id,
+                        "product": "GAZ_12KG",
+                        "quantity_delivered": 12,
+                        "quantity_empty_collected": 8,
+                        "customer": "CLI-FAIL-01",
+                        "confirmed_by": "Client Echec Sage",
+                        "customer_phone": "72000031",
+                        "confirmation_mode": "signature",
+                        "signature_base64": "base64-signature",
+                        "gps": {
+                            "latitude": 12.371,
+                            "longitude": -1.519,
+                            "accuracy": 5.5
+                        },
+                        "delivered_at": "2026-04-09T10:55:00Z"
+                    }
+                }
+            ]
+        },
+    )
+
+    assert sync_response.status_code == 200
+    sync_payload = sync_response.json()
+    assert sync_payload["summary"]["accepted"] == 1
+    assert sync_payload["sage_outbox"]["sent"] == 0
+    assert sync_payload["sage_outbox"]["failed"] >= 1
+
+    db.refresh(program)
+    db.refresh(line)
+    db.refresh(delivery)
+
+    assert delivery.status == DeliveryStatusEnum.COMPLETED
+    assert delivery.delivered_quantity_total == 12
+    assert line.status == "delivered"
+    assert line.quantity_delivered == 12
+    assert program.status == "completed"
+    assert delivery.external_status is None
+    assert delivery.external_error == "Sage unreachable for test"
+
+    confirmation_event = db.query(IntegrationOutbox).filter(
+        IntegrationOutbox.external_message_id == "delivery_confirmation:conf-failure-001"
+    ).one()
+    assert confirmation_event.status == "failed_retryable"
+
+    after_bootstrap = client.get(
+        "/api/driver/bootstrap",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert after_bootstrap.status_code == 200
+    assert after_bootstrap.json()["assignments"] == []
+    assert after_bootstrap.json()["today_programs"] == []
+
+
+def test_failed_retryable_outbox_event_is_sent_after_sage_recovers(client, db, monkeypatch):
+    from app.services import outbox_worker
+
+    driver, depot, truck = _seed_program_context(db, suffix="retry-flow")
+    db.add(
+        PricingRule(
+            product_code="GAZ_12KG",
+            product_label="Gaz 12 kg",
+            depot_id=depot.id,
+            unit_price=Decimal("6500.00"),
+            tax_rate=Decimal("0.1800"),
+            active=True,
+        )
+    )
+    db.commit()
+
+    payload = _program_payload(
+        program_code="PRG-RETRY-001",
+        depot_id=depot.id,
+        truck_id=truck.id,
+        driver_id=driver.id,
+        sync_version=1,
+        lines=[
+            {
+                "line_code": "L1",
+                "external_line_id": "EXT-RETRY-1",
+                "client_code": "CLI-RETRY-01",
+                "client_name": "Client Retry Sage",
+                "destination_address": "Secteur 17",
+                "product_code": "GAZ_12KG",
+                "product_label": "Gaz 12 kg",
+                "quantity_planned": 12,
+            }
+        ],
+    )
+
+    create_response = client.post(
+        "/api/integration/sage/programs",
+        headers={"x-sage-x3-token": "test-token-123"},
+        json=payload,
+    )
+    assert create_response.status_code == 200
+
+    token = _login_token(client, username="driver-retry-flow")
+    program = db.query(Program).filter(Program.program_code == "PRG-RETRY-001").one()
+    line = db.query(ProgramLine).filter(ProgramLine.external_line_id == "EXT-RETRY-1").one()
+    delivery = db.query(Delivery).filter(Delivery.program_id == program.id).one()
+
+    monkeypatch.setattr(settings, "SAGE_X3_PUSH_MODE", "http")
+
+    def _boom(event, client):
+        raise RuntimeError("Temporary Sage outage")
+
+    monkeypatch.setattr(outbox_worker, "_send_to_sage_x3", _boom)
+
+    first_sync = client.post(
+        "/api/driver/sync/batch",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "device_id": "SM-A057-retry-001",
+            "driver_id": driver.id,
+            "batch_id": "batch-retry-confirm-001",
+            "sent_at": "2026-04-09T12:00:00Z",
+            "operations": [
+                {
+                    "type": "delivery_confirmation",
+                    "idempotency_key": "DRV-RETRY-CONF-001",
+                    "payload": {
+                        "confirmation_id": "conf-retry-001",
+                        "delivery_id": delivery.id,
+                        "product": "GAZ_12KG",
+                        "quantity_delivered": 12,
+                        "quantity_empty_collected": 9,
+                        "customer": "CLI-RETRY-01",
+                        "confirmed_by": "Client Retry Sage",
+                        "customer_phone": "72000041",
+                        "confirmation_mode": "signature",
+                        "signature_base64": "base64-signature",
+                        "gps": {
+                            "latitude": 12.371,
+                            "longitude": -1.519,
+                            "accuracy": 5.0
+                        },
+                        "delivered_at": "2026-04-09T11:55:00Z"
+                    }
+                }
+            ]
+        },
+    )
+
+    assert first_sync.status_code == 200
+    db.refresh(delivery)
+    failed_event = db.query(IntegrationOutbox).filter(
+        IntegrationOutbox.external_message_id == "delivery_confirmation:conf-retry-001"
+    ).one()
+    assert failed_event.status == "failed_retryable"
+    assert delivery.external_status is None
+    assert delivery.external_error == "Temporary Sage outage"
+
+    def _success(event, client):
+        return {
+            "status": "sent",
+            "message_id": event.external_message_id,
+            "accepted": True,
+        }
+
+    monkeypatch.setattr(outbox_worker, "_send_to_sage_x3", _success)
+
+    retry_result = outbox_worker.process_pending_outbox_events(db, limit=10)
+    db.refresh(delivery)
+    db.refresh(failed_event)
+
+    assert retry_result["sent"] >= 1
+    assert retry_result["failed"] == 0
+    assert failed_event.status == "sent"
+    assert delivery.status == DeliveryStatusEnum.COMPLETED
+    assert line.status == "delivered"
+    assert program.status == "completed"
+    assert delivery.external_status == SageMissionStatusEnum.SYNCED
+    assert delivery.external_sync_at is not None
+    assert delivery.external_error is None
+
+    after_bootstrap = client.get(
+        "/api/driver/bootstrap",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert after_bootstrap.status_code == 200
+    assert after_bootstrap.json()["assignments"] == []
+    assert after_bootstrap.json()["today_programs"] == []
 
 
 def test_sage_program_upsert_cancels_stale_lines_and_projected_delivery(client, db):

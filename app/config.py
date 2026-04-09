@@ -30,6 +30,8 @@ class Settings:
         "SAGE_X3_INBOUND_TOKEN",
         os.getenv("SAGE_X3_PUSH_TOKEN", "test-token-123"),
     )
+    SAGE_X3_INBOUND_AUTH_SCHEME = os.getenv("SAGE_X3_INBOUND_AUTH_SCHEME", "token")
+    SAGE_X3_INBOUND_AUTH_HEADER = os.getenv("SAGE_X3_INBOUND_AUTH_HEADER", "X-Sage-X3-Token")
     SAGE_X3_TIMEOUT_SECONDS = int(os.getenv("SAGE_X3_TIMEOUT_SECONDS", "15"))
     INTEGRATION_OUTBOX_MAX_RETRIES = int(os.getenv("INTEGRATION_OUTBOX_MAX_RETRIES", "3"))
     SAGE_X3_AUTH_SCHEME = os.getenv("SAGE_X3_AUTH_SCHEME", "bearer")

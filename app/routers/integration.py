@@ -1,6 +1,7 @@
 from datetime import datetime, time
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.auth import require_role
@@ -9,6 +10,7 @@ from app.models import (
     Delivery,
     DeliveryStatusEnum,
     Depot,
+    DriverMapping,
     IntegrationOutbox,
     PricingRule,
     Program,
@@ -78,6 +80,78 @@ def _empty_amounts() -> dict:
         "tax_amount": None,
         "total_amount": None,
     }
+
+
+def _normalize_mapping_code(raw_value: str | None) -> str | None:
+    normalized = (raw_value or "").strip().upper()
+    return normalized or None
+
+
+def _resolve_program_assignment(db: Session, payload: SageProgramInbound) -> tuple[User | None, Truck | None, str, str | None, str | None, str | None]:
+    sage_driver_code = _normalize_mapping_code(payload.sage_driver_code)
+    truck_code = _normalize_mapping_code(payload.truck_code)
+
+    resolved_driver: User | None = None
+    resolved_truck: Truck | None = None
+    assignment_reason: str | None = None
+
+    if payload.truck_id is not None or payload.driver_id is not None:
+        if payload.truck_id is not None:
+            resolved_truck = db.query(Truck).filter(Truck.id == payload.truck_id).first()
+            if resolved_truck is None:
+                raise HTTPException(status_code=404, detail=f"Camion introuvable: {payload.truck_id}")
+
+        if payload.driver_id is not None:
+            resolved_driver = db.query(User).filter(
+                User.id == payload.driver_id,
+                User.role == RoleEnum.RAVITAILLEUR,
+            ).first()
+            if resolved_driver is None:
+                raise HTTPException(status_code=404, detail=f"Livreur introuvable: {payload.driver_id}")
+        elif resolved_truck is not None and resolved_truck.driver_id is not None:
+            resolved_driver = db.query(User).filter(
+                User.id == resolved_truck.driver_id,
+                User.role == RoleEnum.RAVITAILLEUR,
+            ).first()
+
+        if resolved_driver and resolved_truck and resolved_truck.driver_id not in (None, resolved_driver.id):
+            return None, resolved_truck, "UNASSIGNED", "Le camion explicite ne correspond pas au chauffeur explicite.", sage_driver_code, truck_code
+
+        if resolved_driver is None:
+            return None, resolved_truck, "UNASSIGNED", "Aucun chauffeur resolu a partir des identifiants internes fournis.", sage_driver_code, truck_code
+
+        return resolved_driver, resolved_truck, payload.status, None, sage_driver_code, truck_code
+
+    if not sage_driver_code or not truck_code:
+        return None, None, "UNASSIGNED", "Codes Sage incomplets: YLIV et YMATCAM sont requis pour l'affectation mobile.", sage_driver_code, truck_code
+
+    mapping = db.query(DriverMapping).filter(
+        func.upper(DriverMapping.sage_driver_code) == sage_driver_code,
+        func.upper(DriverMapping.truck_code) == truck_code,
+        DriverMapping.is_active == True,
+    ).first()
+    if mapping is None:
+        return None, None, "UNASSIGNED", "Aucun mapping actif trouve pour la paire YLIV + YMATCAM.", sage_driver_code, truck_code
+
+    resolved_driver = db.query(User).filter(
+        User.id == mapping.user_id,
+        User.role == RoleEnum.RAVITAILLEUR,
+        User.is_active == True,
+    ).first()
+    if resolved_driver is None:
+        return None, None, "UNASSIGNED", "Le mapping pointe vers un livreur introuvable ou inactif.", sage_driver_code, truck_code
+
+    resolved_truck = db.query(Truck).filter(
+        func.upper(Truck.license_plate) == truck_code,
+        Truck.is_active == True,
+    ).first()
+    if resolved_truck is None:
+        return None, None, "UNASSIGNED", "Le camion YMATCAM n'existe pas dans le referentiel local.", sage_driver_code, truck_code
+
+    if resolved_truck.driver_id not in (None, resolved_driver.id):
+        return None, resolved_truck, "UNASSIGNED", "Le camion trouve n'est pas rattache au meme utilisateur que le mapping Sage.", sage_driver_code, truck_code
+
+    return resolved_driver, resolved_truck, payload.status, None, sage_driver_code, truck_code
 
 
 def _upsert_delivery_from_program_line(db: Session, program: Program, program_line: ProgramLine) -> Delivery:
@@ -156,26 +230,18 @@ def _serialize_program(program: Program) -> dict:
 @router.post("/sage/programs")
 def upsert_sage_program(
     payload: SageProgramInbound,
+    request: Request,
     db: Session = Depends(get_db),
-    x_sage_x3_token: str | None = Header(default=None),
 ):
     sage_service = SageX3Service(db)
-    if not sage_service.validate_sage_token(x_sage_x3_token or ""):
+    if not sage_service.validate_inbound_headers(request.headers):
         raise HTTPException(status_code=401, detail="Invalid Sage X3 token")
 
     depot = db.query(Depot).filter(Depot.id == payload.depot_id).first()
     if depot is None:
         raise HTTPException(status_code=404, detail=f"Depot introuvable: {payload.depot_id}")
 
-    if payload.truck_id is not None:
-        truck = db.query(Truck).filter(Truck.id == payload.truck_id).first()
-        if truck is None:
-            raise HTTPException(status_code=404, detail=f"Camion introuvable: {payload.truck_id}")
-
-    if payload.driver_id is not None:
-        driver = db.query(User).filter(User.id == payload.driver_id).first()
-        if driver is None:
-            raise HTTPException(status_code=404, detail=f"Livreur introuvable: {payload.driver_id}")
+    resolved_driver, resolved_truck, resolved_status, assignment_reason, sage_driver_code, truck_code = _resolve_program_assignment(db, payload)
 
     existing_message = db.query(IntegrationOutbox).filter(
         IntegrationOutbox.external_message_id == f"sage_program:{payload.program_code}:v{payload.sync_version}"
@@ -193,13 +259,24 @@ def upsert_sage_program(
     program.program_date = datetime.combine(payload.date, time.min)
     program.program_time = payload.time
     program.depot_id = payload.depot_id
-    program.truck_id = payload.truck_id
-    program.driver_id = payload.driver_id
+    program.truck_id = resolved_truck.id if resolved_truck else None
+    program.driver_id = resolved_driver.id if resolved_driver else None
     program.transporter_name = payload.transporter
-    program.status = payload.status
+    program.status = resolved_status
     program.sync_version = payload.sync_version
     program.source_updated_at = payload.source_updated_at
-    program.source_payload = payload.model_dump(mode="json")
+    program.source_payload = {
+        **payload.model_dump(mode="json"),
+        "assignment": {
+            "status": resolved_status,
+            "reason": assignment_reason,
+            "assigned_user_id": resolved_driver.id if resolved_driver else None,
+            "assigned_truck_id": resolved_truck.id if resolved_truck else None,
+            "sage_driver_code": sage_driver_code,
+            "truck_code": truck_code,
+            "security_rule": "server_side_filtering_only",
+        },
+    }
     db.flush()
 
     synced_deliveries = 0

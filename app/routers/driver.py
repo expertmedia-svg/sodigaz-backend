@@ -23,6 +23,7 @@ from app.models import (
 )
 from app.auth import get_current_user, verify_password, create_access_token
 from app.services.pricing_service import resolve_program_line_amount
+from app.services.outbox_worker import process_pending_outbox_events
 from app.time_utils import utc_now, utc_now_iso
 
 router = APIRouter()
@@ -199,6 +200,39 @@ def _load_driver_today_programs(db: Session, driver_id: int) -> list[dict[str, A
         .all()
     )
     return [_serialize_driver_program(program) for program in programs]
+
+
+def _refresh_program_status(program: Optional[Program]) -> None:
+    if program is None:
+        return
+
+    active_lines = [line for line in program.lines if line.status != "cancelled"]
+    if not active_lines:
+        program.status = "completed"
+        return
+
+    fully_processed = []
+    partially_processed = False
+    for line in active_lines:
+        if program.program_type == ProgramTypeEnum.COLLECTION:
+            quantity_done = line.quantity_collected or 0
+        else:
+            quantity_done = line.quantity_delivered or 0
+
+        if quantity_done >= (line.quantity_planned or 0) and (line.quantity_planned or 0) > 0:
+            fully_processed.append(True)
+        else:
+            fully_processed.append(False)
+
+        if quantity_done > 0:
+            partially_processed = True
+
+    if all(fully_processed):
+        program.status = "completed"
+    elif partially_processed:
+        program.status = "in_progress"
+    else:
+        program.status = "active"
 
 def _register_conflict(
     db: Session,
@@ -493,6 +527,8 @@ def _process_delivery_confirmation(
             status="pending",
         )
     )
+
+    _refresh_program_status(delivery.program)
 
     return _build_operation_result(
         operation.idempotency_key,
@@ -865,6 +901,11 @@ def sync_driver_batch(
         },
         "results": results,
     }
+
+    if accepted_count > 0:
+        outbox_result = process_pending_outbox_events(db, limit=max(accepted_count * 2, 10))
+        response_payload["sage_outbox"] = outbox_result
+
     sync_batch.response_payload = response_payload
     db.commit()
 

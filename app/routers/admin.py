@@ -9,10 +9,11 @@ import io
 import csv
 import math
 from app.database import get_db
-from app.models import User, Depot, Truck, Delivery, GPSLog, Stock, RoleEnum, DeliveryStatusEnum, SyncConflict, IntegrationOutbox, IntegrationHealthCheck, SageMissionStatusEnum
+from app.models import User, Depot, Truck, Delivery, GPSLog, Stock, RoleEnum, DeliveryStatusEnum, SyncConflict, IntegrationOutbox, IntegrationHealthCheck, SageMissionStatusEnum, DriverMapping
 from app.schemas import (
     DepotCreate, DepotUpdate, DepotResponse,
     TruckCreate, TruckResponse,
+    DriverMappingCreate, DriverMappingResponse,
     DeliveryCreate, DeliveryUpdate, DeliveryResponse,
     GPSLogResponse, UserResponse, SageMissionResponse, SageMissionApprovalResponse
 )
@@ -201,6 +202,46 @@ def create_truck(truck_data: TruckCreate, db: Session = Depends(get_db), current
     db.commit()
     db.refresh(new_truck)
     return TruckResponse.from_orm(new_truck)
+
+
+@router.get("/driver-mappings", response_model=list[DriverMappingResponse])
+def get_driver_mappings(db: Session = Depends(get_db), current_user: User = Depends(require_role(RoleEnum.ADMIN))):
+    mappings = db.query(DriverMapping).order_by(DriverMapping.updated_at.desc()).all()
+    return [DriverMappingResponse.from_orm(item) for item in mappings]
+
+
+@router.post("/driver-mappings", response_model=DriverMappingResponse)
+def upsert_driver_mapping(mapping_data: DriverMappingCreate, db: Session = Depends(get_db), current_user: User = Depends(require_role(RoleEnum.ADMIN))):
+    user = db.query(User).filter(
+        User.id == mapping_data.user_id,
+        User.role == RoleEnum.RAVITAILLEUR,
+        User.is_active == True,
+    ).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Livreur introuvable pour ce mapping")
+
+    mapping = db.query(DriverMapping).filter(
+        func.upper(DriverMapping.sage_driver_code) == mapping_data.sage_driver_code.strip().upper(),
+        func.upper(DriverMapping.truck_code) == mapping_data.truck_code.strip().upper(),
+    ).first()
+
+    if mapping is None:
+        mapping = DriverMapping(
+            user_id=mapping_data.user_id,
+            sage_driver_code=mapping_data.sage_driver_code.strip().upper(),
+            truck_code=mapping_data.truck_code.strip().upper(),
+            is_active=mapping_data.is_active,
+        )
+        db.add(mapping)
+    else:
+        mapping.user_id = mapping_data.user_id
+        mapping.sage_driver_code = mapping_data.sage_driver_code.strip().upper()
+        mapping.truck_code = mapping_data.truck_code.strip().upper()
+        mapping.is_active = mapping_data.is_active
+
+    db.commit()
+    db.refresh(mapping)
+    return DriverMappingResponse.from_orm(mapping)
 
 # --- LIVRAISONS ---
 @router.delete("/deliveries/clear", status_code=204)

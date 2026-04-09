@@ -5,13 +5,16 @@ import httpx
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import IntegrationOutbox
+from app.models import Delivery, IntegrationOutbox, SageMissionStatusEnum
 from app.time_utils import utc_now
 
 
 def _get_event_endpoints() -> dict[str, str]:
     return {
         "delivery": settings.SAGE_X3_DELIVERY_ENDPOINT,
+        "delivery_completed": settings.SAGE_X3_DELIVERY_ENDPOINT,
+        "DELIVERY_CONFIRMED": settings.SAGE_X3_DELIVERY_ENDPOINT,
+        "COLLECTION_CONFIRMED": settings.SAGE_X3_DELIVERY_ENDPOINT,
         "stock_movement": settings.SAGE_X3_STOCK_MOVEMENT_ENDPOINT,
     }
 
@@ -68,6 +71,27 @@ def _build_auth_headers() -> dict[str, str]:
         else:
             headers[settings.SAGE_X3_AUTH_HEADER] = settings.SAGE_X3_API_KEY
     return headers
+
+
+def _apply_delivery_sync_side_effect(db: Session, event: IntegrationOutbox) -> None:
+    if event.aggregate_type != "delivery":
+        return
+
+    try:
+        delivery_id = int(event.aggregate_id)
+    except (TypeError, ValueError):
+        return
+
+    delivery = db.query(Delivery).filter(Delivery.id == delivery_id).first()
+    if delivery is None:
+        return
+
+    if event.status == "sent":
+        delivery.external_status = SageMissionStatusEnum.SYNCED
+        delivery.external_sync_at = event.sent_at or utc_now()
+        delivery.external_error = None
+    elif event.status in {"failed_retryable", "failed_dead_letter"}:
+        delivery.external_error = event.error_message
 
 
 def check_sage_x3_health(client: Optional[httpx.Client] = None) -> dict:
@@ -159,9 +183,13 @@ def process_pending_outbox_events(
                 event.response_json = response_payload
                 event.error_message = None
                 event.sent_at = utc_now()
+                _apply_delivery_sync_side_effect(db, event)
                 results.append(
                     {
                         "id": event.id,
+                        "aggregate_id": event.aggregate_id,
+                        "aggregate_type": event.aggregate_type,
+                        "event_type": event.event_type,
                         "message_id": event.external_message_id,
                         "status": event.status,
                     }
@@ -174,9 +202,14 @@ def process_pending_outbox_events(
                 else:
                     event.status = "failed_retryable"
 
+                _apply_delivery_sync_side_effect(db, event)
+
                 results.append(
                     {
                         "id": event.id,
+                        "aggregate_id": event.aggregate_id,
+                        "aggregate_type": event.aggregate_type,
+                        "event_type": event.event_type,
                         "message_id": event.external_message_id,
                         "status": event.status,
                         "error": event.error_message,

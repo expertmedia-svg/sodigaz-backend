@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean, Numeric, Enum, JSON
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean, Numeric, Enum, JSON, UniqueConstraint
 from sqlalchemy.orm import relationship
 import enum
 from app.database import Base
@@ -62,6 +62,7 @@ class User(Base):
     trucks = relationship("Truck", back_populates="driver")
     deliveries = relationship("Delivery", back_populates="driver")
     programs = relationship("Program", back_populates="driver")
+    driver_mappings = relationship("DriverMapping", back_populates="user")
     preorders = relationship("Preorder", back_populates="user", foreign_keys="[Preorder.user_id]")
 
 class Depot(Base):
@@ -123,6 +124,23 @@ class Truck(Base):
     deliveries = relationship("Delivery", back_populates="truck")
     programs = relationship("Program", back_populates="truck")
     gps_logs = relationship("GPSLog", back_populates="truck")
+
+
+class DriverMapping(Base):
+    __tablename__ = "driver_mappings"
+    __table_args__ = (
+        UniqueConstraint("sage_driver_code", "truck_code", name="uq_driver_mappings_sage_driver_truck"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    sage_driver_code = Column(String(100), nullable=False, index=True)
+    truck_code = Column(String(100), nullable=False, index=True)
+    is_active = Column(Boolean, default=True, nullable=False, index=True)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+    user = relationship("User", back_populates="driver_mappings")
 
 
 class Program(Base):

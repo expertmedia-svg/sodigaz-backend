@@ -95,6 +95,23 @@ class TruckResponse(OrmModel):
     current_load_6kg_vide: int
     current_load_12kg_vide: int
     is_active: bool
+
+
+class DriverMappingCreate(BaseModel):
+    user_id: int
+    sage_driver_code: str
+    truck_code: str
+    is_active: bool = True
+
+
+class DriverMappingResponse(OrmModel):
+    id: int
+    user_id: int
+    sage_driver_code: str
+    truck_code: str
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
     
 # DELIVERY
 class DeliveryCreate(BaseModel):
@@ -280,6 +297,8 @@ class SageProgramInbound(BaseModel):
     depot_id: int
     truck_id: Optional[int] = None
     driver_id: Optional[int] = None
+    sage_driver_code: Optional[str] = None
+    truck_code: Optional[str] = None
     transporter: Optional[str] = None
     status: str = "active"
     source_updated_at: Optional[datetime] = None

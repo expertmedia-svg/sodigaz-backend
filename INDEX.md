@@ -4,6 +4,8 @@
 
 Vous avez une **implémentation Sage X3 substantielle et fonctionnelle** déjà en place dans votre codebase!
 
+Point d'entree recommande pour la recette et les controles manuels: [RECETTE-SAGE/README.md](RECETTE-SAGE/README.md)
+
 Cet INDEX récapitule:
 1. ✅ Ce qui **EXISTE déjà** dans le projet
 2. 🆕 Ce qui a été **NOUVELLEMENT CRÉÉ**  
@@ -13,6 +15,15 @@ Cet INDEX récapitule:
 ---
 
 ## ✅ CE QUI EXISTE DÉJÀ DANS LE PROJET
+
+### 📘 Dossier de Recette Canonique
+
+**Folder:** [RECETTE-SAGE](RECETTE-SAGE)
+- ✅ Index partageable des recettes Sage
+- ✅ UAT simple pour terrain / support
+- ✅ UAT detaillee de bout en bout
+- ✅ Mapping champs Sage -> backend -> vues
+- ✅ Guide retry outbox manuel
 
 ### 📦 Configuration & Environnement
 
@@ -136,6 +147,7 @@ powershell -ExecutionPolicy Bypass -File test_sage.ps1
 2. [SAGE_X3_TEST_GUIDE.md](SAGE_X3_TEST_GUIDE.md) - 📖 Guide complet (10 minutes)  
 3. [SAGE_X3_IMPLEMENTATION_README.md](SAGE_X3_IMPLEMENTATION_README.md) - 📚 Vue globale
 4. [INDEX.md](INDEX.md) - 📚 Ce fichier
+5. [RECETTE-SAGE/README.md](RECETTE-SAGE/README.md) - 🧭 Package de recette partageable
 
 ---
 
