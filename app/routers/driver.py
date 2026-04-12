@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 from app.database import get_db
@@ -691,11 +692,16 @@ def require_driver_role(current_user: User = Depends(get_current_user)):
 @router.post("/login")
 def login_driver(credentials: LoginRequest, db: Session = Depends(get_db)):
     """Connexion ravitailleur"""
-    
-    user = db.query(User).filter(User.email == credentials.email).first()
+    identifier = credentials.email.strip()
+    user = db.query(User).filter(
+        or_(User.email == identifier, User.username == identifier)
+    ).first()
     
     if not user or not verify_password(credentials.password, user.hashed_password):
-        raise HTTPException(status_code=401, detail="Email ou mot de passe incorrect")
+        raise HTTPException(
+            status_code=401,
+            detail="Identifiant ou mot de passe incorrect",
+        )
     
     if user.role.value != "ravitailleur":
         raise HTTPException(status_code=403, detail="Accès réservé aux ravitailleurs")
