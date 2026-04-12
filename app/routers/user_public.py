@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import or_, and_
+from sqlalchemy import or_, and_, func
 from datetime import datetime, timedelta
 from typing import Optional
 from app.database import get_db
@@ -26,6 +26,10 @@ class DepotPublicResponse(OrmModel):
     latitude: float
     longitude: float
     address: str
+    city: Optional[str]
+    quartier: Optional[str]
+    plv_code: Optional[str]
+    maps_url: Optional[str]
     phone: Optional[str]
     stock_6kg_plein: int
     stock_12kg_plein: int
@@ -65,6 +69,92 @@ def calculate_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> fl
     
     return R * c
 
+
+def _build_itinerary_url(depot: Depot) -> str:
+    if depot.latitude is not None and depot.longitude is not None:
+        return (
+            "https://www.google.com/maps/dir/?api=1"
+            f"&destination={depot.latitude},{depot.longitude}"
+            "&travelmode=driving"
+        )
+    return depot.maps_url or ""
+
+
+@router.get("/depots/map")
+def get_depot_map_data(
+    city: Optional[str] = Query(default=None, description="Filtrer par ville"),
+    quartier: Optional[str] = Query(default=None, description="Filtrer par quartier"),
+    query: Optional[str] = Query(default=None, description="Recherche libre sur nom, adresse ou PLV"),
+    db: Session = Depends(get_db),
+):
+    depots_query = db.query(Depot).filter(Depot.is_active == True)
+
+    if city:
+        depots_query = depots_query.filter(Depot.city.ilike(f"%{city.strip()}%"))
+    if quartier:
+        depots_query = depots_query.filter(Depot.quartier.ilike(f"%{quartier.strip()}%"))
+    if query:
+        raw = f"%{query.strip()}%"
+        depots_query = depots_query.filter(
+            or_(
+                Depot.name.ilike(raw),
+                Depot.address.ilike(raw),
+                Depot.city.ilike(raw),
+                Depot.quartier.ilike(raw),
+                Depot.plv_code.ilike(raw),
+            )
+        )
+
+    depots = depots_query.order_by(Depot.city.asc(), Depot.quartier.asc(), Depot.name.asc()).all()
+    cities = sorted({depot.city for depot in depots if depot.city})
+    quartiers = sorted({depot.quartier for depot in depots if depot.quartier})
+
+    # Calculer la dernière livraison complétée par dépôt
+    depot_ids = [d.id for d in depots]
+    last_deliveries = {}
+    if depot_ids:
+        rows = (
+            db.query(Delivery.depot_id, func.max(Delivery.actual_end))
+            .filter(
+                Delivery.depot_id.in_(depot_ids),
+                Delivery.status == DeliveryStatusEnum.COMPLETED,
+                Delivery.actual_end.isnot(None),
+            )
+            .group_by(Delivery.depot_id)
+            .all()
+        )
+        last_deliveries = {row[0]: row[1].isoformat() if row[1] else None for row in rows}
+
+    return {
+        "filters": {
+            "cities": cities,
+            "quartiers": quartiers,
+        },
+        "items": [
+            {
+                "id": depot.id,
+                "name": depot.name,
+                "latitude": depot.latitude,
+                "longitude": depot.longitude,
+                "address": depot.address,
+                "city": depot.city,
+                "quartier": depot.quartier,
+                "plv_code": depot.plv_code,
+                "maps_url": depot.maps_url,
+                "itinerary_url": _build_itinerary_url(depot),
+                "phone": depot.phone,
+                "stock_6kg_plein": depot.stock_6kg_plein,
+                "stock_12kg_plein": depot.stock_12kg_plein,
+                "stock_6kg_vide": depot.stock_6kg_vide,
+                "stock_12kg_vide": depot.stock_12kg_vide,
+                "capacity_6kg": depot.capacity_6kg,
+                "capacity_12kg": depot.capacity_12kg,
+                "last_delivery_at": last_deliveries.get(depot.id),
+            }
+            for depot in depots
+        ],
+    }
+
 @router.get("/depots/nearest")
 def get_nearest_depots_public(
     lat: float = Query(..., description="Latitude utilisateur"),
@@ -90,6 +180,11 @@ def get_nearest_depots_public(
                 "latitude": depot.latitude,
                 "longitude": depot.longitude,
                 "address": depot.address,
+                "city": depot.city,
+                "quartier": depot.quartier,
+                "plv_code": depot.plv_code,
+                "maps_url": depot.maps_url,
+                "itinerary_url": _build_itinerary_url(depot),
                 "phone": depot.phone,
                 "stock_6kg_plein": depot.stock_6kg_plein,
                 "stock_12kg_plein": depot.stock_12kg_plein,
@@ -126,6 +221,11 @@ def get_depot_details_public(
         "latitude": depot.latitude,
         "longitude": depot.longitude,
         "address": depot.address,
+        "city": depot.city,
+        "quartier": depot.quartier,
+        "plv_code": depot.plv_code,
+        "maps_url": depot.maps_url,
+        "itinerary_url": _build_itinerary_url(depot),
         "phone": depot.phone,
         "stock_6kg_plein": depot.stock_6kg_plein,
         "stock_12kg_plein": depot.stock_12kg_plein,
@@ -166,6 +266,11 @@ def get_recently_delivered_depots_public(
             "latitude": depot.latitude,
             "longitude": depot.longitude,
             "address": depot.address,
+            "city": depot.city,
+            "quartier": depot.quartier,
+            "plv_code": depot.plv_code,
+            "maps_url": depot.maps_url,
+            "itinerary_url": _build_itinerary_url(depot),
             "phone": depot.phone,
             "stock_6kg_plein": depot.stock_6kg_plein,
             "stock_12kg_plein": depot.stock_12kg_plein,

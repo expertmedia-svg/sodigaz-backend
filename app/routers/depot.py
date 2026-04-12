@@ -45,6 +45,10 @@ class CreateDepotUserRequest(BaseModel):
     depot_phone: str
     depot_latitude: float
     depot_longitude: float
+    depot_city: Optional[str] = None
+    depot_quartier: Optional[str] = None
+    depot_plv_code: Optional[str] = None
+    depot_maps_url: Optional[str] = None
     # Capacités détaillées (optionnelles pour compatibilité)
     capacity_6kg: Optional[float] = None
     capacity_12kg: Optional[float] = None
@@ -137,6 +141,10 @@ def create_depot_and_user(request: CreateDepotUserRequest, db: Session = Depends
         phone=request.depot_phone,
         latitude=request.depot_latitude,
         longitude=request.depot_longitude,
+        city=request.depot_city,
+        quartier=request.depot_quartier,
+        plv_code=request.depot_plv_code,
+        maps_url=request.depot_maps_url,
         capacity_6kg=cap_6kg,
         capacity_12kg=cap_12kg,
         manager_id=user.id
@@ -191,6 +199,10 @@ def get_depot_info(
         "capacity": float((depot.capacity_6kg or 0) + (depot.capacity_12kg or 0)),
         "current_stock": float((depot.stock_6kg_plein or 0) + (depot.stock_12kg_plein or 0)),
         "address": depot.address,
+        "city": depot.city,
+        "quartier": depot.quartier,
+        "plv_code": depot.plv_code,
+        "maps_url": depot.maps_url,
         "phone": depot.phone,
         "is_low_stock": stock.is_low_stock if stock else False,
         "is_out_of_stock": stock.is_out_of_stock if stock else False

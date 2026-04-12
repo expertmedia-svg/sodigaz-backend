@@ -148,6 +148,79 @@ def _append_delivery_note(delivery: Delivery, note: str) -> None:
     delivery.notes = f"{delivery.notes}\n{note}".strip() if delivery.notes else note
 
 
+def _refresh_delivery_pricing_preview(delivery: Delivery, db: Session) -> bool:
+    if delivery.program_type != ProgramTypeEnum.DELIVERY.value:
+        return False
+    if delivery.program_line is None or delivery.status == DeliveryStatusEnum.COMPLETED:
+        return False
+
+    preview_quantity = (
+        delivery.delivered_quantity_total
+        or delivery.program_line.quantity_delivered
+        or delivery.quantity
+        or delivery.program_line.quantity_planned
+        or 0
+    )
+    if preview_quantity <= 0:
+        return False
+
+    pricing_rule, amount_summary = resolve_program_line_amount(
+        db,
+        program_line=delivery.program_line,
+        quantity_delivered=preview_quantity,
+        depot_id=delivery.depot_id,
+    )
+
+    changed = False
+
+    next_pricing_rule_id = pricing_rule.id if pricing_rule else None
+    next_unit_price = amount_summary["unit_price"]
+    next_tax_rate = amount_summary["tax_rate"]
+    next_subtotal = amount_summary["subtotal_amount"]
+    next_tax_amount = amount_summary["tax_amount"]
+    next_total = amount_summary["total_amount"]
+
+    if delivery.program_line.pricing_rule_id != next_pricing_rule_id:
+        delivery.program_line.pricing_rule_id = next_pricing_rule_id
+        changed = True
+    if delivery.program_line.unit_price != next_unit_price:
+        delivery.program_line.unit_price = next_unit_price
+        changed = True
+    if delivery.program_line.tax_rate != next_tax_rate:
+        delivery.program_line.tax_rate = next_tax_rate
+        changed = True
+    if delivery.program_line.subtotal_amount != next_subtotal:
+        delivery.program_line.subtotal_amount = next_subtotal
+        changed = True
+    if delivery.program_line.tax_amount != next_tax_amount:
+        delivery.program_line.tax_amount = next_tax_amount
+        changed = True
+    if delivery.program_line.total_amount != next_total:
+        delivery.program_line.total_amount = next_total
+        changed = True
+
+    if delivery.pricing_rule_id != next_pricing_rule_id:
+        delivery.pricing_rule_id = next_pricing_rule_id
+        changed = True
+    if delivery.unit_price_applied != next_unit_price:
+        delivery.unit_price_applied = next_unit_price
+        changed = True
+    if delivery.tax_rate_applied != next_tax_rate:
+        delivery.tax_rate_applied = next_tax_rate
+        changed = True
+    if delivery.subtotal_amount != next_subtotal:
+        delivery.subtotal_amount = next_subtotal
+        changed = True
+    if delivery.tax_amount != next_tax_amount:
+        delivery.tax_amount = next_tax_amount
+        changed = True
+    if delivery.total_amount != next_total:
+        delivery.total_amount = next_total
+        changed = True
+
+    return changed
+
+
 def _serialize_driver_program(program: Program) -> dict[str, Any]:
     return {
         "program_code": program.program_code,
@@ -679,6 +752,12 @@ def get_driver_bootstrap(
             DeliveryStatusEnum.IN_PROGRESS,
         ])
     ).order_by(Delivery.scheduled_date).all()
+
+    pricing_changed = False
+    for delivery in deliveries:
+        pricing_changed = _refresh_delivery_pricing_preview(delivery, db) or pricing_changed
+    if pricing_changed:
+        db.commit()
 
     latest_batch = db.query(SyncBatch).filter(
         SyncBatch.driver_id == current_user.id

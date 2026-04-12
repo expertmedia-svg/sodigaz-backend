@@ -48,6 +48,9 @@ class DepotCreate(BaseModel):
     capacity: Optional[float] = None
     address: str
     city: Optional[str] = None
+    quartier: Optional[str] = None
+    plv_code: Optional[str] = None
+    maps_url: Optional[str] = None
     phone: str
     manager_id: Optional[int] = None
 
@@ -59,6 +62,9 @@ class DepotUpdate(BaseModel):
     capacity_12kg: Optional[int] = None
     address: Optional[str] = None
     city: Optional[str] = None
+    quartier: Optional[str] = None
+    plv_code: Optional[str] = None
+    maps_url: Optional[str] = None
     phone: Optional[str] = None
 
 class DepotResponse(OrmModel):
@@ -74,6 +80,9 @@ class DepotResponse(OrmModel):
     capacity_12kg: int
     address: str
     city: Optional[str]
+    quartier: Optional[str]
+    plv_code: Optional[str]
+    maps_url: Optional[str]
     phone: str
     is_active: bool
     

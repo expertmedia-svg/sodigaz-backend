@@ -59,6 +59,9 @@ def create_depot(depot_data: DepotCreate, db: Session = Depends(get_db), current
         capacity_12kg=cap_12kg,
         address=depot_data.address,
         city=depot_data.city,
+        quartier=depot_data.quartier,
+        plv_code=depot_data.plv_code,
+        maps_url=depot_data.maps_url,
         phone=depot_data.phone,
         manager_id=depot_data.manager_id
     )
@@ -86,8 +89,14 @@ def update_depot(depot_id: int, depot_data: DepotUpdate, db: Session = Depends(g
         depot.capacity_12kg = depot_data.capacity_12kg
     if depot_data.city:
         depot.city = depot_data.city
+    if depot_data.quartier is not None:
+        depot.quartier = depot_data.quartier
     if depot_data.address:
         depot.address = depot_data.address
+    if depot_data.plv_code is not None:
+        depot.plv_code = depot_data.plv_code
+    if depot_data.maps_url is not None:
+        depot.maps_url = depot_data.maps_url
     if depot_data.phone:
         depot.phone = depot_data.phone
     
@@ -303,7 +312,10 @@ def get_all_deliveries(
             "depot": {
                 "id": d.depot.id,
                 "name": d.depot.name,
-                "city": d.depot.city
+                "city": d.depot.city,
+                "quartier": d.depot.quartier,
+                "plv_code": d.depot.plv_code,
+                "maps_url": d.depot.maps_url,
             } if d.depot else None
         }
         result.append(delivery_dict)
@@ -1382,3 +1394,162 @@ def reject_sage_mission(
         mission_id=mission_id,
         delivery_id=mission.id
     )
+
+
+# ===========================================================================
+# SEED DE DÉMO — Injection de livraisons pour la présentation
+# ===========================================================================
+
+import random
+
+class SeedDemoRequest(BaseModel):
+    max_days_ago: int = 14
+    min_deliveries: int = 1
+    max_deliveries: int = 3
+
+@router.post("/seed-demo-deliveries")
+def seed_demo_deliveries(
+    body: SeedDemoRequest = SeedDemoRequest(),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(RoleEnum.ADMIN)),
+):
+    """Injecte des livraisons COMPLETED fictives pour chaque dépôt actif (démo/présentation)."""
+    depots = db.query(Depot).filter(Depot.is_active == True).all()
+    trucks = db.query(Truck).all()
+    if not trucks:
+        raise HTTPException(status_code=400, detail="Aucun camion trouvé. Créez au moins 1 camion.")
+
+    created = 0
+    now = utc_now()
+
+    for depot in depots:
+        count = random.randint(body.min_deliveries, body.max_deliveries)
+        for _ in range(count):
+            days_ago = random.randint(0, body.max_days_ago)
+            hours_ago = random.randint(0, 23)
+            delivery_time = now - timedelta(days=days_ago, hours=hours_ago)
+            truck = random.choice(trucks)
+
+            delivery = Delivery(
+                truck_id=truck.id,
+                depot_id=depot.id,
+                destination_name=depot.name,
+                destination_address=depot.address or "",
+                destination_latitude=depot.latitude,
+                destination_longitude=depot.longitude,
+                contact_name="Démo",
+                contact_phone=depot.phone or "-",
+                quantity_6kg=random.randint(5, 30),
+                quantity_12kg=random.randint(2, 15),
+                status=DeliveryStatusEnum.COMPLETED,
+                source_type="demo_seed",
+                scheduled_date=delivery_time,
+                actual_start=delivery_time - timedelta(minutes=random.randint(20, 90)),
+                actual_end=delivery_time,
+                created_at=delivery_time - timedelta(hours=1),
+            )
+            db.add(delivery)
+            created += 1
+
+    db.commit()
+    return {"success": True, "message": f"{created} livraisons de démo créées pour {len(depots)} dépôts."}
+
+
+# ===========================================================================
+# SEED SAGE — Injection d'un programme Sage de démo pour test chauffeur
+# ===========================================================================
+
+class SeedSageProgramRequest(BaseModel):
+    driver_id: int
+    truck_id: int
+    depot_id: int = 1
+    nb_lines: int = 3
+
+@router.post("/seed-sage-program")
+def seed_sage_program(
+    body: SeedSageProgramRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(RoleEnum.ADMIN)),
+):
+    """Injecte un programme Sage X3 de démo et projette les missions chauffeur."""
+    from app.schemas import SageProgramInbound, ProgramLineInbound
+    from app.routers.integration import upsert_sage_program
+
+    driver = db.query(User).filter(User.id == body.driver_id).first()
+    if not driver or driver.role != RoleEnum.RAVITAILLEUR:
+        raise HTTPException(status_code=400, detail=f"Chauffeur id={body.driver_id} introuvable ou pas ravitailleur.")
+    truck = db.query(Truck).filter(Truck.id == body.truck_id).first()
+    if not truck:
+        raise HTTPException(status_code=400, detail=f"Camion id={body.truck_id} introuvable.")
+    depot = db.query(Depot).filter(Depot.id == body.depot_id).first()
+    if not depot:
+        raise HTTPException(status_code=400, detail=f"Dépôt id={body.depot_id} introuvable.")
+
+    timestamp = utc_now().strftime("%Y%m%d%H%M%S")
+    program_code = f"DEMO-SAGE-{timestamp}"
+
+    demo_clients = [
+        ("CLI-DEMO-001", "Boutique Centrale", "Av. Kwame Nkrumah, Ouagadougou", 12.3714, -1.5197),
+        ("CLI-DEMO-002", "Station Koudougou", "Route N1, Koudougou", 12.2533, -1.5146),
+        ("CLI-DEMO-003", "Dépôt Bobo-Dioulasso", "Secteur 25, Bobo-Dioulasso", 11.1771, -4.2979),
+        ("CLI-DEMO-004", "Revendeur ZAD", "Zone d'Activités Diverses, Ouaga", 12.3500, -1.5300),
+        ("CLI-DEMO-005", "Dépôt Banfora", "Centre-ville, Banfora", 10.6333, -4.7667),
+    ]
+
+    lines = []
+    for i in range(min(body.nb_lines, len(demo_clients))):
+        c = demo_clients[i]
+        products = [("GAZ_6KG", "Bouteille 6kg", "B06", random.randint(5, 20)),
+                     ("GAZ_12KG", "Bouteille 12kg", "B12", random.randint(3, 12))]
+        product = random.choice(products)
+        lines.append(ProgramLineInbound(
+            external_line_id=f"DEMO-L-{timestamp}-{i+1:02d}",
+            line_code=f"LINE-{i+1:03d}",
+            client_code=c[0],
+            client_name=c[1],
+            destination_address=c[2],
+            destination_latitude=c[3],
+            destination_longitude=c[4],
+            contact_name=f"Resp. {c[1]}",
+            contact_phone=f"+2267{random.randint(1000000, 9999999)}",
+            product_code=product[0],
+            product_label=product[1],
+            article=product[2],
+            zone="BF-DEMO",
+            quantity_planned=product[3],
+            delivery_mode="TRUCK",
+            comment=f"Ligne démo #{i+1} pour présentation Sage X3",
+        ))
+
+    payload = SageProgramInbound(
+        program_code=program_code,
+        program_type="DELIVERY",
+        site="SOD-BF-DEMO",
+        date=date.today(),
+        time="08:30",
+        depot_id=body.depot_id,
+        truck_id=body.truck_id,
+        driver_id=body.driver_id,
+        transporter="SODIGAZ DEMO",
+        status="active",
+        source_updated_at=utc_now(),
+        sync_version=1,
+        lines=lines,
+    )
+
+    # Simuler un request avec le bon header Sage pour passer la validation
+    from unittest.mock import MagicMock
+    fake_request = MagicMock()
+    fake_request.headers = {"X-Sage-X3-Token": "test-token-123"}
+
+    result = upsert_sage_program(payload=payload, request=fake_request, db=db)
+
+    return {
+        "success": True,
+        "program_code": program_code,
+        "driver": driver.full_name,
+        "truck_id": body.truck_id,
+        "lines_count": len(lines),
+        "message": f"Programme Sage '{program_code}' créé avec {len(lines)} lignes pour {driver.full_name}. Le chauffeur peut maintenant voir ses missions dans l'app.",
+        "detail": result,
+    }

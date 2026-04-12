@@ -293,6 +293,7 @@ def upsert_sage_program(
         collected_quantity = inbound_line.quantity_collected or program_line.quantity_collected or 0
         pricing_rule = None
         if program_type == ProgramTypeEnum.DELIVERY:
+            preview_quantity = delivered_quantity if delivered_quantity > 0 else inbound_line.quantity_planned
             pricing_rule = resolve_active_pricing_rule(
                 db,
                 product_code=inbound_line.product_code,
@@ -308,7 +309,7 @@ def upsert_sage_program(
             if tax_rate is None:
                 tax_rate = 0
             amounts = calculate_delivery_amount(
-                quantity_delivered=delivered_quantity,
+                quantity_delivered=preview_quantity,
                 unit_price=unit_price,
                 tax_rate=tax_rate,
             )

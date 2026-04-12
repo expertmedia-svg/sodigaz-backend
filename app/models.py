@@ -88,6 +88,9 @@ class Depot(Base):
     
     address = Column(String(500))
     city = Column(String(255))
+    quartier = Column(String(255), nullable=True)
+    plv_code = Column(String(100), nullable=True, index=True)
+    maps_url = Column(String(1000), nullable=True)
     phone = Column(String(20))
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=utc_now)
