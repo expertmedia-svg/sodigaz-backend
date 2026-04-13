@@ -1464,6 +1464,7 @@ class SeedSageProgramRequest(BaseModel):
     truck_id: int
     depot_id: int = 1
     nb_lines: int = 3
+    program_type: str = "PRES"
 
 @router.post("/seed-sage-program")
 def seed_sage_program(
@@ -1474,6 +1475,15 @@ def seed_sage_program(
     """Injecte un programme Sage X3 de démo et projette les missions chauffeur."""
     from app.schemas import SageProgramInbound, ProgramLineInbound
     from app.routers.integration import upsert_sage_program
+
+    requested_program_type = (body.program_type or "PRES").strip().upper()
+    is_collection = requested_program_type in {"PCOL", "COLLECTION"}
+    if requested_program_type not in {"PRES", "DELIVERY", "PCOL", "COLLECTION"}:
+        raise HTTPException(
+            status_code=400,
+            detail="program_type invalide. Valeurs supportées: PRES, DELIVERY, PCOL, COLLECTION.",
+        )
+    normalized_program_type = "COLLECTION" if is_collection else "DELIVERY"
 
     driver = db.query(User).filter(User.id == body.driver_id).first()
     if not driver or driver.role != RoleEnum.RAVITAILLEUR:
@@ -1486,7 +1496,8 @@ def seed_sage_program(
         raise HTTPException(status_code=400, detail=f"Dépôt id={body.depot_id} introuvable.")
 
     timestamp = utc_now().strftime("%Y%m%d%H%M%S")
-    program_code = f"DEMO-SAGE-{timestamp}"
+    program_prefix = "PCOL" if is_collection else "PRES"
+    program_code = f"DEMO-{program_prefix}-{timestamp}"
 
     demo_clients = [
         ("CLI-DEMO-001", "Boutique Centrale", "Av. Kwame Nkrumah, Ouagadougou", 12.3714, -1.5197),
@@ -1517,13 +1528,18 @@ def seed_sage_program(
             article=product[2],
             zone="BF-DEMO",
             quantity_planned=product[3],
-            delivery_mode="TRUCK",
-            comment=f"Ligne démo #{i+1} pour présentation Sage X3",
+            delivery_mode="PCOL" if is_collection else "PRES",
+            collection_sheet=f"FICHE-DEMO-{i+1:02d}" if is_collection else None,
+            comment=(
+                f"Ligne démo #{i+1} pour présentation Sage X3 - collecte de bouteilles vides"
+                if is_collection
+                else f"Ligne démo #{i+1} pour présentation Sage X3 - livraison avec encaissement"
+            ),
         ))
 
     payload = SageProgramInbound(
         program_code=program_code,
-        program_type="DELIVERY",
+        program_type=normalized_program_type,
         site="SOD-BF-DEMO",
         date=date.today(),
         time="08:30",
@@ -1547,9 +1563,11 @@ def seed_sage_program(
     return {
         "success": True,
         "program_code": program_code,
+        "requested_program_type": requested_program_type,
+        "normalized_program_type": normalized_program_type,
         "driver": driver.full_name,
         "truck_id": body.truck_id,
         "lines_count": len(lines),
-        "message": f"Programme Sage '{program_code}' créé avec {len(lines)} lignes pour {driver.full_name}. Le chauffeur peut maintenant voir ses missions dans l'app.",
+        "message": f"Programme Sage '{program_code}' ({requested_program_type}) créé avec {len(lines)} lignes pour {driver.full_name}. Le chauffeur peut maintenant voir ses missions dans l'app.",
         "detail": result,
     }

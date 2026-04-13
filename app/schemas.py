@@ -2,7 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 from app.models import RoleEnum, DeliveryStatusEnum, PreorderStatusEnum, BottleTypeEnum, SageMissionStatusEnum, ProgramTypeEnum
 
 
@@ -313,6 +313,18 @@ class SageProgramInbound(BaseModel):
     source_updated_at: Optional[datetime] = None
     sync_version: int = Field(default=1, ge=1)
     lines: list[ProgramLineInbound] = Field(default_factory=list)
+
+    @field_validator("program_type", mode="before")
+    @classmethod
+    def normalize_program_type(cls, value):
+        if isinstance(value, ProgramTypeEnum):
+            return value
+        normalized = str(value or ProgramTypeEnum.DELIVERY.value).strip().upper()
+        if normalized in {"COLLECTION", "PCOL"}:
+            return ProgramTypeEnum.COLLECTION
+        if normalized in {"DELIVERY", "PRES"}:
+            return ProgramTypeEnum.DELIVERY
+        return value
 
 
 class ProgramAmountResponse(BaseModel):

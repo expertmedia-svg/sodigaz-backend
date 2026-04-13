@@ -40,6 +40,21 @@ def _login_token(client, *, username: str, password: str = "secret123") -> str:
     return response.json()["access_token"]
 
 
+def _register_api_user(client, *, email: str, username: str, role: str, password: str = "secret123") -> dict:
+    response = client.post(
+        "/api/auth/register",
+        json={
+            "email": email,
+            "username": username,
+            "password": password,
+            "full_name": username,
+            "role": role,
+        },
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
 def _seed_program_context(db, *, suffix: str) -> tuple[User, Depot, Truck]:
     driver = _create_user(db, username=f"driver-{suffix}", role=RoleEnum.RAVITAILLEUR)
     depot = Depot(
@@ -267,6 +282,150 @@ def test_collection_program_upsert_and_confirmation_creates_collection_event(cli
     ).one()
     assert outbox_event.event_type == "COLLECTION_CONFIRMED"
     assert outbox_event.payload_json["quantity_collected"] == 6
+
+
+def test_sage_program_upsert_accepts_pcol_and_projects_collection_flow(client, db):
+    driver, depot, truck = _seed_program_context(db, suffix="pcol-ingest")
+
+    payload = _program_payload(
+        program_code="PRG-PCOL-001",
+        depot_id=depot.id,
+        truck_id=truck.id,
+        driver_id=driver.id,
+        sync_version=1,
+        lines=[
+            {
+                "external_line_id": "EXT-PCOL-1",
+                "client_id": "CLI-PCOL-01",
+                "client_name": "Client Demo PCOL",
+                "product_code": "GAZ_6KG",
+                "article": "BOUT06",
+                "zone": "Zone Demo",
+                "quantity_planned": 4,
+                "delivery_mode": "PCOL",
+                "collection_sheet": "FICHE-PCOL-01",
+                "comment": "Collecte demo via code Sage brut",
+            }
+        ],
+    )
+    payload["program_type"] = "PCOL"
+
+    create_response = client.post(
+        "/api/integration/sage/programs",
+        headers={"x-sage-x3-token": "test-token-123"},
+        json=payload,
+    )
+    assert create_response.status_code == 200
+
+    program = db.query(Program).filter(Program.program_code == "PRG-PCOL-001").one()
+    line = db.query(ProgramLine).filter(ProgramLine.external_line_id == "EXT-PCOL-1").one()
+    delivery = db.query(Delivery).filter(Delivery.program_id == program.id).one()
+
+    assert program.program_type.value == "COLLECTION"
+    assert delivery.program_type == "COLLECTION"
+    assert line.delivery_mode == "PCOL"
+    assert line.collection_sheet == "FICHE-PCOL-01"
+    assert delivery.total_amount is None
+
+
+def test_admin_seed_sage_program_pcol_supports_driver_bootstrap_and_empty_bottle_flow(client, db):
+    admin = _register_api_user(
+        client,
+        email="admin-seed-pcol@example.com",
+        username="admin-seed-pcol",
+        role="admin",
+    )
+    admin_token = _login_token(client, username="admin-seed-pcol")
+
+    driver, depot, truck = _seed_program_context(db, suffix="seed-pcol-flow")
+
+    seed_response = client.post(
+        "/api/admin/seed-sage-program",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "driver_id": driver.id,
+            "truck_id": truck.id,
+            "depot_id": depot.id,
+            "nb_lines": 2,
+            "program_type": "PCOL",
+        },
+    )
+    assert seed_response.status_code == 200
+    seed_payload = seed_response.json()
+    assert seed_payload["requested_program_type"] == "PCOL"
+    assert seed_payload["normalized_program_type"] == "COLLECTION"
+    assert seed_payload["program_code"].startswith("DEMO-PCOL-")
+
+    program = db.query(Program).filter(Program.program_code == seed_payload["program_code"]).one()
+    deliveries = db.query(Delivery).filter(Delivery.program_id == program.id).order_by(Delivery.id.asc()).all()
+    assert program.program_type.value == "COLLECTION"
+    assert len(deliveries) == 2
+    assert all(delivery.program_type == "COLLECTION" for delivery in deliveries)
+
+    driver_token = _login_token(client, username=driver.username)
+    bootstrap_response = client.get(
+        "/api/driver/bootstrap",
+        headers={"Authorization": f"Bearer {driver_token}"},
+    )
+    assert bootstrap_response.status_code == 200
+    bootstrap_payload = bootstrap_response.json()
+    assignments = bootstrap_payload["assignments"]
+    assert len(assignments) == 2
+    assert all(item["program_type"] == "COLLECTION" for item in assignments)
+
+    target_delivery = deliveries[0]
+    product = "GAZ_6KG" if target_delivery.quantity_6kg > 0 else "GAZ_12KG"
+    collected_qty = target_delivery.quantity_6kg or target_delivery.quantity_12kg
+
+    sync_response = client.post(
+        "/api/driver/sync/batch",
+        headers={"Authorization": f"Bearer {driver_token}"},
+        json={
+            "device_id": "SM-A057-seed-pcol-demo",
+            "driver_id": driver.id,
+            "batch_id": "batch-seed-pcol-demo-001",
+            "sent_at": "2026-04-13T12:00:00Z",
+            "operations": [
+                {
+                    "type": "delivery_confirmation",
+                    "idempotency_key": "DRV-SEED-PCOL-CONF-001",
+                    "payload": {
+                        "confirmation_id": "conf-seed-pcol-001",
+                        "delivery_id": target_delivery.id,
+                        "product": product,
+                        "quantity_collected": collected_qty,
+                        "quantity_empty_collected": collected_qty,
+                        "confirmed_by": "Demo Collecte",
+                        "confirmation_mode": "signature_photo",
+                        "signature_base64": "base64-signature",
+                        "gps": {
+                            "latitude": 12.375,
+                            "longitude": -1.525,
+                            "accuracy": 8.0,
+                        },
+                        "delivered_at": "2026-04-13T11:55:00Z",
+                    },
+                }
+            ],
+        },
+    )
+    assert sync_response.status_code == 200
+
+    db.refresh(target_delivery)
+    assert target_delivery.status == DeliveryStatusEnum.COMPLETED
+    assert target_delivery.collected_quantity_total == collected_qty
+    assert target_delivery.echange_effectue is True
+    if product == "GAZ_6KG":
+        assert target_delivery.quantity_6kg_vide_recupere == collected_qty
+    else:
+        assert target_delivery.quantity_12kg_vide_recupere == collected_qty
+
+    outbox_event = db.query(IntegrationOutbox).filter(
+        IntegrationOutbox.external_message_id == "delivery_confirmation:conf-seed-pcol-001"
+    ).one()
+    assert outbox_event.event_type == "COLLECTION_CONFIRMED"
+    assert outbox_event.payload_json["quantity_collected"] == collected_qty
+    assert outbox_event.payload_json["quantity_empty_collected"] == collected_qty
 
 
 def test_bidirectional_program_flow_completes_program_and_removes_it_from_driver_today_view(client, db):

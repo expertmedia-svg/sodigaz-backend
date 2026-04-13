@@ -38,7 +38,7 @@ def _resolved_program_type(raw_value: ProgramTypeEnum | str | None) -> ProgramTy
     if isinstance(raw_value, ProgramTypeEnum):
         return raw_value
     normalized = (raw_value or ProgramTypeEnum.DELIVERY.value).strip().upper()
-    return ProgramTypeEnum.COLLECTION if normalized == ProgramTypeEnum.COLLECTION.value else ProgramTypeEnum.DELIVERY
+    return ProgramTypeEnum.COLLECTION if normalized in {ProgramTypeEnum.COLLECTION.value, "PCOL"} else ProgramTypeEnum.DELIVERY
 
 
 def _resolved_line_code(inbound_line) -> str:
