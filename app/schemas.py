@@ -226,22 +226,24 @@ class SageMissionInbound(BaseModel):
 class SageMissionResponse(OrmModel):
     """Réponse Sage mission avec statut d'approbation"""
     id: int
-    external_delivery_id: str
-    destination_name: str
-    destination_address: str
-    destination_latitude: float
-    destination_longitude: float
+    external_delivery_id: Optional[str]
+    destination_name: Optional[str]
+    destination_address: Optional[str]
+    destination_latitude: Optional[float]
+    destination_longitude: Optional[float]
     contact_name: Optional[str]
     contact_phone: Optional[str]
-    depot_id: int
+    depot_id: Optional[int]
     quantity_6kg: int
     quantity_12kg: int
-    scheduled_date: datetime
-    external_status: SageMissionStatusEnum
+    scheduled_date: Optional[datetime]
+    external_status: Optional[SageMissionStatusEnum]
     external_sync_at: Optional[datetime]
     external_error: Optional[str]
     notes: Optional[str]
     created_at: datetime
+    program_type: Optional[str] = None
+    source_type: Optional[str] = None
 
 class SageMissionApprovalResponse(BaseModel):
     """Réponse approbation"""
