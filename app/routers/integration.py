@@ -17,6 +17,7 @@ from app.models import (
     ProgramLine,
     ProgramTypeEnum,
     RoleEnum,
+    SageMissionStatusEnum,
     Truck,
     User,
 )
@@ -177,7 +178,8 @@ def _upsert_delivery_from_program_line(db: Session, program: Program, program_li
             quantity_12kg=quantity_12kg,
             quantity=program_line.quantity_planned,
             status=DeliveryStatusEnum.PENDING,
-            source_type="sage_program",
+            source_type="sage_inbound",
+            external_status=SageMissionStatusEnum.PENDING_APPROVAL,
             external_delivery_id=f"{program.program_code}:{program_line.line_code}",
             scheduled_date=program.program_date,
             notes=f"Programme Sage X3 {program.program_code}",

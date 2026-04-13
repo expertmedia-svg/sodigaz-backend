@@ -1245,7 +1245,7 @@ def get_sage_missions(
     Lister les missions reçues de Sage X3 (cahier de charge).
     Utilise la table Delivery avec source_type='sage_inbound'
     """
-    query = db.query(Delivery).filter(Delivery.source_type == "sage_inbound")
+    query = db.query(Delivery).filter(Delivery.source_type.in_(["sage_inbound", "sage_program"]))
     
     if status != "all":
         query = query.filter(Delivery.external_status == status)
@@ -1263,7 +1263,7 @@ def get_sage_mission_detail(
     """Détail d'une mission Sage"""
     mission = db.query(Delivery).filter(
         Delivery.id == mission_id,
-        Delivery.source_type == "sage_inbound"
+        Delivery.source_type.in_(["sage_inbound", "sage_program"])
     ).first()
     
     if not mission:
@@ -1287,7 +1287,7 @@ def approve_sage_mission(
     """
     mission = db.query(Delivery).filter(
         Delivery.id == mission_id,
-        Delivery.source_type == "sage_inbound"
+        Delivery.source_type.in_(["sage_inbound", "sage_program"])
     ).first()
     
     if not mission:
@@ -1353,7 +1353,7 @@ def reject_sage_mission(
     """
     mission = db.query(Delivery).filter(
         Delivery.id == mission_id,
-        Delivery.source_type == "sage_inbound"
+        Delivery.source_type.in_(["sage_inbound", "sage_program"])
     ).first()
     
     if not mission:
