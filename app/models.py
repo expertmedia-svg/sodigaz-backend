@@ -146,7 +146,16 @@ class DriverMapping(Base):
     sage_driver_code = Column(String(100), nullable=False, index=True)
     truck_code = Column(String(100), nullable=False, index=True)
     is_active = Column(Boolean, default=True, nullable=False, index=True)
-    status = Column(Enum(DriverMappingStatusEnum), default=DriverMappingStatusEnum.ACTIVE, nullable=False, index=True)
+    status = Column(
+        Enum(
+            DriverMappingStatusEnum,
+            values_callable=lambda enum_cls: [item.value for item in enum_cls],
+            native_enum=False,
+        ),
+        default=DriverMappingStatusEnum.ACTIVE,
+        nullable=False,
+        index=True,
+    )
     auto_created = Column(Boolean, default=False, nullable=False)
     source_program_code = Column(String(100), nullable=True, index=True)
     created_at = Column(DateTime, default=utc_now, nullable=False)
