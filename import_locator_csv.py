@@ -6,8 +6,6 @@ import io
 import re
 from pathlib import Path
 
-from openlocationcode import openlocationcode as olc
-
 from app.database import SessionLocal
 from app.models import Depot
 
@@ -196,11 +194,17 @@ def _decode_plus_code(street: str | None, city: str | None) -> tuple[float, floa
 
     ref_lat, ref_lng = _city_reference(city)
     try:
+        from openlocationcode import openlocationcode as olc
+
         full_code = plus_code
         if not olc.isFull(plus_code):
             full_code = olc.recoverNearest(plus_code, ref_lat, ref_lng)
         area = olc.decode(full_code)
         return (area.latitudeCenter, area.longitudeCenter)
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "Le package openlocationcode est requis pour importer le format locator basé sur les plus codes."
+        ) from exc
     except Exception:
         return None
 
