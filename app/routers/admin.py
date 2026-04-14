@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
@@ -21,6 +21,7 @@ from app.auth import require_role, hash_password
 from app.services.outbox_worker import check_sage_x3_health, process_pending_outbox_events
 from app.time_utils import utc_now, utc_now_iso
 from app.websocket_manager import manager
+from import_locator_csv import import_depots_csv_text
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -103,6 +104,42 @@ def update_depot(depot_id: int, depot_data: DepotUpdate, db: Session = Depends(g
     db.commit()
     db.refresh(depot)
     return DepotResponse.from_orm(depot)
+
+
+@router.post("/depots/import-csv")
+async def import_depots_csv(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_role(RoleEnum.ADMIN)),
+):
+    filename = (file.filename or '').lower()
+    if not filename.endswith('.csv'):
+        raise HTTPException(status_code=400, detail="Veuillez importer un fichier CSV.")
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Le fichier CSV est vide.")
+
+    try:
+        text = content.decode('utf-8-sig')
+    except UnicodeDecodeError:
+        text = content.decode('latin-1')
+
+    try:
+        created, updated, skipped, detected_format = import_depots_csv_text(text)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Import CSV impossible: {exc}",
+        ) from exc
+
+    return {
+        "message": "Import terminé",
+        "format": detected_format,
+        "created": created,
+        "updated": updated,
+        "skipped": skipped,
+        "filename": file.filename,
+    }
 
 
 class DepotManagerUpdate(BaseModel):
