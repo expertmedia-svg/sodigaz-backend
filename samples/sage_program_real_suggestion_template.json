@@ -1,0 +1,26 @@
+{
+  "program_code": "PRG-REAL-SUGGEST-001",
+  "program_type": "DELIVERY",
+  "site": "SOD-BF-01",
+  "date": "2026-04-14",
+  "time": "09:15",
+  "depot_id": 1,
+  "sage_driver_code": "REPLACE_WITH_KNOWN_YLIV",
+  "truck_code": "REPLACE_WITH_NEW_OR_SHARED_YMATCAM",
+  "transporter": "SODIGAZ Logistics",
+  "status": "active",
+  "source_updated_at": "2026-04-14T09:15:00Z",
+  "sync_version": 1,
+  "lines": [
+    {
+      "external_line_id": "EXT-REAL-SUGGEST-001",
+      "line_code": "LINE-SUGGEST-001",
+      "client_code": "CLI-002",
+      "client_name": "Client reel suggestion a remplacer",
+      "destination_address": "Adresse reelle a remplacer",
+      "product_code": "GAZ_6KG",
+      "product_label": "Gaz 6kg",
+      "quantity_planned": 8
+    }
+  ]
+}

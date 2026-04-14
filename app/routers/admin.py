@@ -9,7 +9,7 @@ import io
 import csv
 import math
 from app.database import get_db
-from app.models import User, Depot, Truck, Delivery, GPSLog, Stock, RoleEnum, DeliveryStatusEnum, SyncConflict, IntegrationOutbox, IntegrationHealthCheck, SageMissionStatusEnum, DriverMapping
+from app.models import User, Depot, Truck, Delivery, GPSLog, Stock, RoleEnum, DeliveryStatusEnum, SyncConflict, IntegrationOutbox, IntegrationHealthCheck, SageMissionStatusEnum, DriverMapping, DriverMappingStatusEnum
 from app.schemas import (
     DepotCreate, DepotUpdate, DepotResponse,
     TruckCreate, TruckResponse,
@@ -24,6 +24,17 @@ from app.websocket_manager import manager
 from import_locator_csv import import_depots_csv_text
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+
+def _resolve_driver_mapping_status(is_active: bool, explicit_status: Optional[str] = None) -> DriverMappingStatusEnum:
+    normalized = (explicit_status or "").strip().lower()
+    if normalized == DriverMappingStatusEnum.PENDING_APPROVAL.value:
+        return DriverMappingStatusEnum.PENDING_APPROVAL
+    if normalized == DriverMappingStatusEnum.INACTIVE.value:
+        return DriverMappingStatusEnum.INACTIVE
+    if normalized == DriverMappingStatusEnum.ACTIVE.value:
+        return DriverMappingStatusEnum.ACTIVE
+    return DriverMappingStatusEnum.ACTIVE if is_active else DriverMappingStatusEnum.INACTIVE
 
 # --- DÉPÔTS ---
 
@@ -266,6 +277,7 @@ def upsert_driver_mapping(mapping_data: DriverMappingCreate, db: Session = Depen
     if not user:
         raise HTTPException(status_code=404, detail="Livreur introuvable pour ce mapping")
 
+    resolved_status = _resolve_driver_mapping_status(mapping_data.is_active, mapping_data.status)
     mapping = db.query(DriverMapping).filter(
         func.upper(DriverMapping.sage_driver_code) == mapping_data.sage_driver_code.strip().upper(),
         func.upper(DriverMapping.truck_code) == mapping_data.truck_code.strip().upper(),
@@ -276,15 +288,34 @@ def upsert_driver_mapping(mapping_data: DriverMappingCreate, db: Session = Depen
             user_id=mapping_data.user_id,
             sage_driver_code=mapping_data.sage_driver_code.strip().upper(),
             truck_code=mapping_data.truck_code.strip().upper(),
-            is_active=mapping_data.is_active,
+            is_active=resolved_status == DriverMappingStatusEnum.ACTIVE,
+            status=resolved_status,
+            auto_created=False,
         )
         db.add(mapping)
     else:
         mapping.user_id = mapping_data.user_id
         mapping.sage_driver_code = mapping_data.sage_driver_code.strip().upper()
         mapping.truck_code = mapping_data.truck_code.strip().upper()
-        mapping.is_active = mapping_data.is_active
+        mapping.is_active = resolved_status == DriverMappingStatusEnum.ACTIVE
+        mapping.status = resolved_status
 
+        if resolved_status != DriverMappingStatusEnum.PENDING_APPROVAL:
+            mapping.auto_created = False
+
+    db.commit()
+    db.refresh(mapping)
+    return DriverMappingResponse.from_orm(mapping)
+
+
+@router.post("/driver-mappings/{mapping_id}/approve", response_model=DriverMappingResponse)
+def approve_driver_mapping(mapping_id: int, db: Session = Depends(get_db), current_user: User = Depends(require_role(RoleEnum.ADMIN))):
+    mapping = db.query(DriverMapping).filter(DriverMapping.id == mapping_id).first()
+    if mapping is None:
+        raise HTTPException(status_code=404, detail="Mapping introuvable")
+
+    mapping.status = DriverMappingStatusEnum.ACTIVE
+    mapping.is_active = True
     db.commit()
     db.refresh(mapping)
     return DriverMappingResponse.from_orm(mapping)

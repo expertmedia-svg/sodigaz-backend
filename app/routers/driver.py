@@ -733,6 +733,46 @@ def get_current_driver(current_user: User = Depends(require_driver_role)):
         "role": current_user.role.value
     }
 
+
+def _resolve_driver_operational_truck(
+    db: Session,
+    driver_id: int,
+    active_deliveries: list[Delivery] | None = None,
+) -> Truck | None:
+    truck_ids: list[int] = []
+    seen_ids: set[int] = set()
+
+    deliveries = active_deliveries
+    if deliveries is None:
+        deliveries = db.query(Delivery).filter(
+            Delivery.driver_id == driver_id,
+            Delivery.status.in_([
+                DeliveryStatusEnum.PENDING,
+                DeliveryStatusEnum.IN_PROGRESS,
+            ]),
+        ).order_by(Delivery.scheduled_date).all()
+
+    for delivery in deliveries:
+        if delivery.truck_id and delivery.truck_id not in seen_ids:
+            seen_ids.add(delivery.truck_id)
+            truck_ids.append(delivery.truck_id)
+
+    if truck_ids:
+        active_trucks = db.query(Truck).filter(
+            Truck.id.in_(truck_ids),
+            Truck.is_active == True,
+        ).all()
+        trucks_by_id = {truck.id: truck for truck in active_trucks}
+        for truck_id in truck_ids:
+            truck = trucks_by_id.get(truck_id)
+            if truck is not None:
+                return truck
+
+    return db.query(Truck).filter(
+        Truck.driver_id == driver_id,
+        Truck.is_active == True,
+    ).order_by(Truck.id.asc()).first()
+
 @router.get("/bootstrap")
 def get_driver_bootstrap(
     current_user: User = Depends(require_driver_role),
@@ -774,10 +814,7 @@ def get_driver_bootstrap(
         SyncConflict.resolution_status == "open"
     ).count()
 
-    truck = db.query(Truck).filter(
-        Truck.driver_id == current_user.id,
-        Truck.is_active == True,
-    ).first()
+    truck = _resolve_driver_operational_truck(db, current_user.id, deliveries)
 
     assignments = []
     for delivery in deliveries:

@@ -111,6 +111,7 @@ class DriverMappingCreate(BaseModel):
     sage_driver_code: str
     truck_code: str
     is_active: bool = True
+    status: Optional[str] = None
 
 
 class DriverMappingResponse(OrmModel):
@@ -119,6 +120,9 @@ class DriverMappingResponse(OrmModel):
     sage_driver_code: str
     truck_code: str
     is_active: bool
+    status: str
+    auto_created: bool
+    source_program_code: Optional[str]
     created_at: datetime
     updated_at: datetime
     

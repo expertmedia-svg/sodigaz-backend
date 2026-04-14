@@ -11,6 +11,7 @@ from app.models import (
     DeliveryStatusEnum,
     Depot,
     DriverMapping,
+    DriverMappingStatusEnum,
     IntegrationOutbox,
     PricingRule,
     Program,
@@ -88,6 +89,67 @@ def _normalize_mapping_code(raw_value: str | None) -> str | None:
     return normalized or None
 
 
+def _ensure_pending_mapping_suggestion(
+    db: Session,
+    *,
+    sage_driver_code: str,
+    truck_code: str,
+    program_code: str,
+) -> str:
+    existing_pair = db.query(DriverMapping).filter(
+        func.upper(DriverMapping.sage_driver_code) == sage_driver_code,
+        func.upper(DriverMapping.truck_code) == truck_code,
+    ).first()
+    if existing_pair is not None:
+        if existing_pair.status == DriverMappingStatusEnum.PENDING_APPROVAL:
+            return "Couple detecte et deja en attente de validation admin."
+        if existing_pair.status == DriverMappingStatusEnum.INACTIVE:
+            return "Couple connu mais actuellement inactif; validation admin requise avant affectation."
+
+    resolved_truck = db.query(Truck).filter(
+        func.upper(Truck.license_plate) == truck_code,
+        Truck.is_active == True,
+    ).first()
+    if resolved_truck is None:
+        return "Aucun mapping actif trouve pour la paire YLIV + YMATCAM, et le camion YMATCAM est inconnu localement."
+
+    known_driver_links = db.query(DriverMapping).filter(
+        func.upper(DriverMapping.sage_driver_code) == sage_driver_code,
+    ).all()
+    candidate_user_ids = sorted({mapping.user_id for mapping in known_driver_links})
+    if len(candidate_user_ids) != 1:
+        return "Aucun mapping actif trouve pour la paire YLIV + YMATCAM, et le code YLIV n'est pas resolu de facon unique pour une suggestion automatique."
+
+    candidate_driver = db.query(User).filter(
+        User.id == candidate_user_ids[0],
+        User.role == RoleEnum.RAVITAILLEUR,
+        User.is_active == True,
+    ).first()
+    if candidate_driver is None:
+        return "Aucun mapping actif trouve pour la paire YLIV + YMATCAM, et le chauffeur detecte pour YLIV est introuvable ou inactif."
+
+    if existing_pair is None:
+        db.add(
+            DriverMapping(
+                user_id=candidate_driver.id,
+                sage_driver_code=sage_driver_code,
+                truck_code=truck_code,
+                is_active=False,
+                status=DriverMappingStatusEnum.PENDING_APPROVAL,
+                auto_created=True,
+                source_program_code=program_code,
+            )
+        )
+        return "Couple detecte automatiquement et place en attente de validation admin avant affectation."
+
+    existing_pair.user_id = candidate_driver.id
+    existing_pair.is_active = False
+    existing_pair.status = DriverMappingStatusEnum.PENDING_APPROVAL
+    existing_pair.auto_created = True
+    existing_pair.source_program_code = program_code
+    return "Couple detecte automatiquement et remis en attente de validation admin avant affectation."
+
+
 def _resolve_program_assignment(db: Session, payload: SageProgramInbound) -> tuple[User | None, Truck | None, str, str | None, str | None, str | None]:
     sage_driver_code = _normalize_mapping_code(payload.sage_driver_code)
     truck_code = _normalize_mapping_code(payload.truck_code)
@@ -129,10 +191,17 @@ def _resolve_program_assignment(db: Session, payload: SageProgramInbound) -> tup
     mapping = db.query(DriverMapping).filter(
         func.upper(DriverMapping.sage_driver_code) == sage_driver_code,
         func.upper(DriverMapping.truck_code) == truck_code,
+        DriverMapping.status == DriverMappingStatusEnum.ACTIVE,
         DriverMapping.is_active == True,
     ).first()
     if mapping is None:
-        return None, None, "UNASSIGNED", "Aucun mapping actif trouve pour la paire YLIV + YMATCAM.", sage_driver_code, truck_code
+        assignment_reason = _ensure_pending_mapping_suggestion(
+            db,
+            sage_driver_code=sage_driver_code,
+            truck_code=truck_code,
+            program_code=payload.program_code,
+        )
+        return None, None, "UNASSIGNED", assignment_reason, sage_driver_code, truck_code
 
     resolved_driver = db.query(User).filter(
         User.id == mapping.user_id,
@@ -150,9 +219,12 @@ def _resolve_program_assignment(db: Session, payload: SageProgramInbound) -> tup
         return None, None, "UNASSIGNED", "Le camion YMATCAM n'existe pas dans le referentiel local.", sage_driver_code, truck_code
 
     if resolved_truck.driver_id not in (None, resolved_driver.id):
-        return None, resolved_truck, "UNASSIGNED", "Le camion trouve n'est pas rattache au meme utilisateur que le mapping Sage.", sage_driver_code, truck_code
+        assignment_reason = (
+            "Affectation resolue via le mapping actif YLIV + YMATCAM; "
+            "le camion local est partage et n'est pas rattache statiquement a ce chauffeur."
+        )
 
-    return resolved_driver, resolved_truck, payload.status, None, sage_driver_code, truck_code
+    return resolved_driver, resolved_truck, payload.status, assignment_reason, sage_driver_code, truck_code
 
 
 def _upsert_delivery_from_program_line(db: Session, program: Program, program_line: ProgramLine) -> Delivery:

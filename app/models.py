@@ -45,6 +45,12 @@ class ProgramTypeEnum(str, enum.Enum):
     DELIVERY = "DELIVERY"
     COLLECTION = "COLLECTION"
 
+
+class DriverMappingStatusEnum(str, enum.Enum):
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+    PENDING_APPROVAL = "pending_approval"
+
 class User(Base):
     __tablename__ = "users"
     
@@ -140,6 +146,9 @@ class DriverMapping(Base):
     sage_driver_code = Column(String(100), nullable=False, index=True)
     truck_code = Column(String(100), nullable=False, index=True)
     is_active = Column(Boolean, default=True, nullable=False, index=True)
+    status = Column(Enum(DriverMappingStatusEnum), default=DriverMappingStatusEnum.ACTIVE, nullable=False, index=True)
+    auto_created = Column(Boolean, default=False, nullable=False)
+    source_program_code = Column(String(100), nullable=True, index=True)
     created_at = Column(DateTime, default=utc_now, nullable=False)
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 

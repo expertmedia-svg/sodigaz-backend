@@ -7,6 +7,8 @@ from app.models import (
     Delivery,
     DeliveryStatusEnum,
     Depot,
+    DriverMapping,
+    DriverMappingStatusEnum,
     IntegrationOutbox,
     PricingRule,
     Program,
@@ -326,6 +328,256 @@ def test_sage_program_upsert_accepts_pcol_and_projects_collection_flow(client, d
     assert line.delivery_mode == "PCOL"
     assert line.collection_sheet == "FICHE-PCOL-01"
     assert delivery.total_amount is None
+
+
+def test_sage_pair_mapping_allows_shared_truck_and_bootstrap_uses_operational_truck(client, db):
+    assigned_driver = _create_user(db, username="driver-shared-target", role=RoleEnum.RAVITAILLEUR)
+    fallback_truck_owner = _create_user(db, username="driver-shared-owner", role=RoleEnum.RAVITAILLEUR)
+
+    depot = Depot(
+        name="Depot-shared-truck",
+        manager_id=None,
+        latitude=12.3714,
+        longitude=-1.5197,
+        stock_6kg_plein=80,
+        stock_12kg_plein=60,
+        stock_6kg_vide=10,
+        stock_12kg_vide=8,
+        capacity_6kg=120,
+        capacity_12kg=120,
+        address="Ouagadougou secteur 1",
+        city="Ouagadougou",
+        phone="70000000",
+    )
+    db.add(depot)
+    db.commit()
+    db.refresh(depot)
+
+    shared_truck = Truck(
+        license_plate="TRK-SHARED-001",
+        driver_id=fallback_truck_owner.id,
+        capacity_6kg=120,
+        capacity_12kg=100,
+        current_load_6kg_plein=33,
+        current_load_12kg_plein=21,
+        current_load_6kg_vide=4,
+        current_load_12kg_vide=2,
+    )
+    db.add(shared_truck)
+    db.commit()
+    db.refresh(shared_truck)
+
+    db.add(
+        DriverMapping(
+            user_id=assigned_driver.id,
+            sage_driver_code="YLIV-SHARED-01",
+            truck_code=shared_truck.license_plate,
+            is_active=True,
+        )
+    )
+    db.commit()
+
+    response = client.post(
+        "/api/integration/sage/programs",
+        headers={"x-sage-x3-token": "test-token-123"},
+        json={
+            "program_code": "PRG-SHARED-TRUCK-001",
+            "program_type": "DELIVERY",
+            "site": "SOD-BF-01",
+            "date": "2026-04-08",
+            "time": "08:30",
+            "depot_id": depot.id,
+            "sage_driver_code": "YLIV-SHARED-01",
+            "truck_code": shared_truck.license_plate,
+            "transporter": "SODIGAZ Logistics",
+            "status": "active",
+            "source_updated_at": "2026-04-08T07:30:00Z",
+            "sync_version": 1,
+            "lines": [
+                {
+                    "line_code": "L1",
+                    "external_line_id": "EXT-SHARED-L1",
+                    "client_code": "CLI-01",
+                    "client_name": "Client Shared Truck",
+                    "destination_address": "Secteur 10",
+                    "product_code": "GAZ_12KG",
+                    "product_label": "Gaz 12 kg",
+                    "quantity_planned": 12,
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+
+    program = db.query(Program).filter(Program.program_code == "PRG-SHARED-TRUCK-001").one()
+    delivery = db.query(Delivery).filter(Delivery.program_id == program.id).one()
+    assert program.driver_id == assigned_driver.id
+    assert program.truck_id == shared_truck.id
+    assert program.status == "active"
+    assert delivery.driver_id == assigned_driver.id
+    assert delivery.truck_id == shared_truck.id
+
+    token = _login_token(client, username="driver-shared-target")
+    bootstrap_response = client.get(
+        "/api/driver/bootstrap",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert bootstrap_response.status_code == 200
+    bootstrap_payload = bootstrap_response.json()
+    assert bootstrap_payload["truck"]["id"] == shared_truck.id
+    assert bootstrap_payload["truck"]["license_plate"] == shared_truck.license_plate
+    assert bootstrap_payload["truck_stock"][0]["truck_id"] == shared_truck.id
+    assert bootstrap_payload["assignments"][0]["id"] == delivery.id
+
+
+def test_unknown_pair_creates_pending_mapping_suggestion_until_admin_approves(client, db):
+    admin = _register_api_user(
+        client,
+        email="admin-mapping-suggestion@example.com",
+        username="admin-mapping-suggestion",
+        role="admin",
+    )
+    admin_token = _login_token(client, username="admin-mapping-suggestion")
+
+    known_driver = _create_user(db, username="driver-known-yliv", role=RoleEnum.RAVITAILLEUR)
+    depot = Depot(
+        name="Depot-mapping-suggestion",
+        manager_id=None,
+        latitude=12.3714,
+        longitude=-1.5197,
+        stock_6kg_plein=80,
+        stock_12kg_plein=60,
+        stock_6kg_vide=10,
+        stock_12kg_vide=8,
+        capacity_6kg=120,
+        capacity_12kg=120,
+        address="Ouagadougou secteur 1",
+        city="Ouagadougou",
+        phone="70000000",
+    )
+    db.add(depot)
+    db.commit()
+    db.refresh(depot)
+
+    base_truck = Truck(
+        license_plate="TRK-KNOWN-YLIV",
+        driver_id=known_driver.id,
+        capacity_6kg=120,
+        capacity_12kg=100,
+        current_load_6kg_plein=33,
+        current_load_12kg_plein=21,
+        current_load_6kg_vide=4,
+        current_load_12kg_vide=2,
+    )
+    candidate_truck = Truck(
+        license_plate="TRK-CANDIDATE-NEW",
+        driver_id=None,
+        capacity_6kg=120,
+        capacity_12kg=100,
+        current_load_6kg_plein=15,
+        current_load_12kg_plein=9,
+        current_load_6kg_vide=1,
+        current_load_12kg_vide=0,
+    )
+    db.add(base_truck)
+    db.add(candidate_truck)
+    db.commit()
+    db.refresh(base_truck)
+    db.refresh(candidate_truck)
+
+    db.add(
+        DriverMapping(
+            user_id=known_driver.id,
+            sage_driver_code="YLIV-KNOWN-001",
+            truck_code=base_truck.license_plate,
+            is_active=True,
+            status=DriverMappingStatusEnum.ACTIVE,
+        )
+    )
+    db.commit()
+
+    inbound_payload = {
+        "program_code": "PRG-SUGGEST-001",
+        "program_type": "DELIVERY",
+        "site": "SOD-BF-01",
+        "date": "2026-04-08",
+        "time": "08:30",
+        "depot_id": depot.id,
+        "sage_driver_code": "YLIV-KNOWN-001",
+        "truck_code": candidate_truck.license_plate,
+        "transporter": "SODIGAZ Logistics",
+        "status": "active",
+        "source_updated_at": "2026-04-08T07:30:00Z",
+        "sync_version": 1,
+        "lines": [
+            {
+                "line_code": "L1",
+                "external_line_id": "EXT-SUGGEST-L1",
+                "client_code": "CLI-01",
+                "client_name": "Client Suggestion",
+                "destination_address": "Secteur 10",
+                "product_code": "GAZ_12KG",
+                "product_label": "Gaz 12 kg",
+                "quantity_planned": 12,
+            }
+        ],
+    }
+
+    first_response = client.post(
+        "/api/integration/sage/programs",
+        headers={"x-sage-x3-token": "test-token-123"},
+        json=inbound_payload,
+    )
+
+    assert first_response.status_code == 200
+
+    program = db.query(Program).filter(Program.program_code == "PRG-SUGGEST-001").one()
+    assert program.status == "UNASSIGNED"
+    assert program.driver_id is None
+
+    suggested_mapping = db.query(DriverMapping).filter(
+        DriverMapping.sage_driver_code == "YLIV-KNOWN-001",
+        DriverMapping.truck_code == candidate_truck.license_plate,
+    ).one()
+    assert suggested_mapping.user_id == known_driver.id
+    assert suggested_mapping.status == DriverMappingStatusEnum.PENDING_APPROVAL
+    assert suggested_mapping.is_active is False
+    assert suggested_mapping.auto_created is True
+    assert suggested_mapping.source_program_code == "PRG-SUGGEST-001"
+
+    approve_response = client.post(
+        f"/api/admin/driver-mappings/{suggested_mapping.id}/approve",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert approve_response.status_code == 200
+    db.refresh(suggested_mapping)
+    assert suggested_mapping.status == DriverMappingStatusEnum.ACTIVE
+    assert suggested_mapping.is_active is True
+
+    inbound_payload["sync_version"] = 2
+    second_response = client.post(
+        "/api/integration/sage/programs",
+        headers={"x-sage-x3-token": "test-token-123"},
+        json=inbound_payload,
+    )
+    assert second_response.status_code == 200
+
+    db.refresh(program)
+    assert program.status == "active"
+    assert program.driver_id == known_driver.id
+    assert program.truck_id == candidate_truck.id
+
+    driver_token = _login_token(client, username="driver-known-yliv")
+    bootstrap_response = client.get(
+        "/api/driver/bootstrap",
+        headers={"Authorization": f"Bearer {driver_token}"},
+    )
+    assert bootstrap_response.status_code == 200
+    bootstrap_payload = bootstrap_response.json()
+    assert bootstrap_payload["truck"]["id"] == candidate_truck.id
+    assert bootstrap_payload["assignments"][0]["program_code"] == "PRG-SUGGEST-001"
 
 
 def test_admin_seed_sage_program_pcol_supports_driver_bootstrap_and_empty_bottle_flow(client, db):
