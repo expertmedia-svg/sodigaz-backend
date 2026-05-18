@@ -2,7 +2,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
-import pyodbc
+import pymssql
 
 from app.config import settings
 
@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 def get_sage_sql_connection():
-    """Retourne une connexion pyodbc vers Sage X3 SQL Server."""
+    """Retourne une connexion pymssql vers Sage X3 SQL Server."""
     missing = []
     if not settings.SAGE_SQL_SERVER:
         missing.append("SAGE_SQL_SERVER")
@@ -22,22 +22,23 @@ def get_sage_sql_connection():
         missing.append("SAGE_SQL_USER")
     if not settings.SAGE_SQL_PASSWORD:
         missing.append("SAGE_SQL_PASSWORD")
-    if not settings.SAGE_SQL_DRIVER:
-        missing.append("SAGE_SQL_DRIVER")
 
     if missing:
         raise ValueError(f"Missing Sage SQL configuration: {', '.join(missing)}")
 
-    conn_str = (
-        f"DRIVER={{{settings.SAGE_SQL_DRIVER}}};"
-        f"SERVER={settings.SAGE_SQL_SERVER};"
-        f"DATABASE={settings.SAGE_SQL_DATABASE};"
-        f"UID={settings.SAGE_SQL_USER};"
-        f"PWD={settings.SAGE_SQL_PASSWORD};"
-        f"Connection Timeout={settings.SAGE_SQL_TIMEOUT_SECONDS};"
-    )
+    # Parser server et port depuis le format "host,port"
+    server_parts = settings.SAGE_SQL_SERVER.split(',')
+    server = server_parts[0].strip()
+    port = int(server_parts[1].strip()) if len(server_parts) > 1 else 1433
 
-    return pyodbc.connect(conn_str)
+    return pymssql.connect(
+        server=server,
+        port=port,
+        user=settings.SAGE_SQL_USER,
+        password=settings.SAGE_SQL_PASSWORD,
+        database=settings.SAGE_SQL_DATABASE,
+        timeout=settings.SAGE_SQL_TIMEOUT_SECONDS,
+    )
 
 
 def lire_programmes_du_jour() -> list[dict[str, Any]]:
