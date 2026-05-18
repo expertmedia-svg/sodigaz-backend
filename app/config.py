@@ -25,6 +25,8 @@ class Settings:
     # Sage X3 integration
     SAGE_X3_BASE_URL = os.getenv("SAGE_X3_BASE_URL", "")
     SAGE_X3_API_KEY = os.getenv("SAGE_X3_API_KEY", "")
+    SAGE_X3_API_USER = os.getenv("SAGE_X3_API_USER", "")
+    SAGE_X3_API_PASSWORD = os.getenv("SAGE_X3_API_PASSWORD", "")
     SAGE_X3_PUSH_MODE = os.getenv("SAGE_X3_PUSH_MODE", "mock")
     SAGE_X3_INBOUND_TOKEN = os.getenv(
         "SAGE_X3_INBOUND_TOKEN",
@@ -41,5 +43,16 @@ class Settings:
     SAGE_X3_HEALTH_ENDPOINT = os.getenv("SAGE_X3_HEALTH_ENDPOINT", "/health")
     SAGE_X3_PUSH_TOKEN = SAGE_X3_INBOUND_TOKEN
     SAGE_X3_MOCK_MODE = SAGE_X3_PUSH_MODE == "mock"
+
+    # Sage X3 SQL Server direct connection
+    SAGE_SQL_SERVER = os.getenv("SAGE_SQL_SERVER", "")
+    SAGE_SQL_DATABASE = os.getenv("SAGE_SQL_DATABASE", "")
+    SAGE_SQL_SCHEMA = os.getenv("SAGE_SQL_SCHEMA", "")
+    SAGE_SQL_USER = os.getenv("SAGE_SQL_USER", "")
+    SAGE_SQL_PASSWORD = os.getenv("SAGE_SQL_PASSWORD", "")
+    SAGE_SQL_DRIVER = os.getenv("SAGE_SQL_DRIVER", "ODBC Driver 17 for SQL Server")
+    SAGE_SQL_TIMEOUT_SECONDS = int(os.getenv("SAGE_SQL_TIMEOUT_SECONDS", "10"))
+    SAGE_SQL_DAILY_SYNC_TIME = os.getenv("SAGE_SQL_DAILY_SYNC_TIME", "06:00")
+    SAGE_SQL_DAILY_SYNC_ENABLED = os.getenv("SAGE_SQL_DAILY_SYNC_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 settings = Settings()

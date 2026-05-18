@@ -27,10 +27,17 @@ from app.schemas import (
     PricingRuleResponse,
     ProgramResponse,
     SageProgramInbound,
+    SageRawProgramInbound,
+    normalize_sage_raw_to_inbound,
 )
+import logging
+
 from app.services.pricing_service import calculate_delivery_amount, resolve_active_pricing_rule
+from app.services.sage_sql_service import lire_programmes_du_jour
 from app.services.sage_x3_service import SageX3Service
 from app.time_utils import utc_now, utc_now_iso
+
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter(prefix="/api/integration", tags=["integration"])
@@ -96,58 +103,137 @@ def _ensure_pending_mapping_suggestion(
     truck_code: str,
     program_code: str,
 ) -> str:
+    from app.auth import hash_password
+
     existing_pair = db.query(DriverMapping).filter(
         func.upper(DriverMapping.sage_driver_code) == sage_driver_code,
         func.upper(DriverMapping.truck_code) == truck_code,
     ).first()
     if existing_pair is not None:
         if existing_pair.status == DriverMappingStatusEnum.PENDING_APPROVAL:
-            return "Couple detecte et deja en attente de validation admin."
+            # Auto-activer le mapping en attente
+            existing_pair.is_active = True
+            existing_pair.status = DriverMappingStatusEnum.ACTIVE
+            return "Mapping en attente auto-activé par le programme Sage."
         if existing_pair.status == DriverMappingStatusEnum.INACTIVE:
-            return "Couple connu mais actuellement inactif; validation admin requise avant affectation."
+            # Réactiver le mapping inactif
+            existing_pair.is_active = True
+            existing_pair.status = DriverMappingStatusEnum.ACTIVE
+            return "Mapping inactif réactivé automatiquement par le programme Sage."
 
     resolved_truck = db.query(Truck).filter(
         func.upper(Truck.license_plate) == truck_code,
         Truck.is_active == True,
     ).first()
     if resolved_truck is None:
-        return "Aucun mapping actif trouve pour la paire YLIV + YMATCAM, et le camion YMATCAM est inconnu localement."
+        # Auto-créer le camion à partir du matricule Sage
+        resolved_truck = Truck(
+            license_plate=truck_code,
+            is_active=True,
+        )
+        db.add(resolved_truck)
+        db.flush()
 
     known_driver_links = db.query(DriverMapping).filter(
         func.upper(DriverMapping.sage_driver_code) == sage_driver_code,
     ).all()
     candidate_user_ids = sorted({mapping.user_id for mapping in known_driver_links})
-    if len(candidate_user_ids) != 1:
-        return "Aucun mapping actif trouve pour la paire YLIV + YMATCAM, et le code YLIV n'est pas resolu de facon unique pour une suggestion automatique."
 
-    candidate_driver = db.query(User).filter(
-        User.id == candidate_user_ids[0],
-        User.role == RoleEnum.RAVITAILLEUR,
-        User.is_active == True,
-    ).first()
-    if candidate_driver is None:
-        return "Aucun mapping actif trouve pour la paire YLIV + YMATCAM, et le chauffeur detecte pour YLIV est introuvable ou inactif."
+    if len(candidate_user_ids) == 1:
+        # Un seul chauffeur lié à ce code Sage, l'utiliser
+        candidate_driver = db.query(User).filter(
+            User.id == candidate_user_ids[0],
+            User.role == RoleEnum.RAVITAILLEUR,
+            User.is_active == True,
+        ).first()
+        if candidate_driver is not None:
+            if existing_pair is None:
+                db.add(
+                    DriverMapping(
+                        user_id=candidate_driver.id,
+                        sage_driver_code=sage_driver_code,
+                        truck_code=truck_code,
+                        is_active=True,
+                        status=DriverMappingStatusEnum.ACTIVE,
+                        auto_created=True,
+                        source_program_code=program_code,
+                    )
+                )
+                return "Mapping auto-créé et activé automatiquement."
+            else:
+                existing_pair.user_id = candidate_driver.id
+                existing_pair.is_active = True
+                existing_pair.status = DriverMappingStatusEnum.ACTIVE
+                existing_pair.auto_created = True
+                existing_pair.source_program_code = program_code
+                return "Mapping existant réactivé automatiquement."
+        else:
+            return "Le chauffeur détecté pour YLIV est introuvable ou inactif."
 
-    if existing_pair is None:
-        db.add(
-            DriverMapping(
-                user_id=candidate_driver.id,
-                sage_driver_code=sage_driver_code,
-                truck_code=truck_code,
-                is_active=False,
-                status=DriverMappingStatusEnum.PENDING_APPROVAL,
-                auto_created=True,
-                source_program_code=program_code,
+    # Cas: aucun mapping ou mappings multiples
+    # Chercher un chauffeur rattaché au camion
+    if resolved_truck.driver_id is not None:
+        candidate_driver = db.query(User).filter(
+            User.id == resolved_truck.driver_id,
+            User.role == RoleEnum.RAVITAILLEUR,
+            User.is_active == True,
+        ).first()
+        if candidate_driver is not None:
+            db.add(
+                DriverMapping(
+                    user_id=candidate_driver.id,
+                    sage_driver_code=sage_driver_code,
+                    truck_code=truck_code,
+                    is_active=True,
+                    status=DriverMappingStatusEnum.ACTIVE,
+                    auto_created=True,
+                    source_program_code=program_code,
+                )
             )
-        )
-        return "Couple detecte automatiquement et place en attente de validation admin avant affectation."
+            return "Mapping auto-créé et activé via le chauffeur rattaché au camion."
 
-    existing_pair.user_id = candidate_driver.id
-    existing_pair.is_active = False
-    existing_pair.status = DriverMappingStatusEnum.PENDING_APPROVAL
-    existing_pair.auto_created = True
-    existing_pair.source_program_code = program_code
-    return "Couple detecte automatiquement et remis en attente de validation admin avant affectation."
+    # Cas: aucun chauffeur trouvé → créer automatiquement le chauffeur
+    normalized_code = sage_driver_code.lower().strip()
+    email = f"{normalized_code}@sodigaz-app.local"
+    username = normalized_code
+
+    # Vérifier que le chauffeur n'existe pas
+    existing_driver = db.query(User).filter(
+        func.upper(User.email) == email.upper()
+    ).first()
+
+    if existing_driver and existing_driver.is_active and existing_driver.role == RoleEnum.RAVITAILLEUR:
+        candidate_driver = existing_driver
+        msg = "Chauffeur existant trouvé lors de la création auto; "
+    else:
+        # Créer le nouveau chauffeur
+        password = f"Code{sage_driver_code.upper()}@2026"
+        candidate_driver = User(
+            email=email,
+            username=username,
+            hashed_password=hash_password(password),
+            full_name=f"Chauffeur {sage_driver_code}",
+            phone=None,
+            role=RoleEnum.RAVITAILLEUR,
+            is_active=True,
+        )
+        db.add(candidate_driver)
+        db.flush()
+        msg = f"Chauffeur créé auto: {email} / {password}; "
+
+    # Créer le mapping avec le chauffeur
+    db.add(
+        DriverMapping(
+            user_id=candidate_driver.id,
+            sage_driver_code=sage_driver_code,
+            truck_code=truck_code,
+            is_active=True,
+            status=DriverMappingStatusEnum.ACTIVE,
+            auto_created=True,
+            source_program_code=program_code,
+        )
+    )
+    return f"{msg}mapping auto-créé et activé pour le programme {program_code}."
 
 
 def _resolve_program_assignment(db: Session, payload: SageProgramInbound) -> tuple[User | None, Truck | None, str, str | None, str | None, str | None]:
@@ -201,7 +287,16 @@ def _resolve_program_assignment(db: Session, payload: SageProgramInbound) -> tup
             truck_code=truck_code,
             program_code=payload.program_code,
         )
-        return None, None, "UNASSIGNED", assignment_reason, sage_driver_code, truck_code
+        db.flush()
+        # Re-chercher le mapping après auto-activation
+        mapping = db.query(DriverMapping).filter(
+            func.upper(DriverMapping.sage_driver_code) == sage_driver_code,
+            func.upper(DriverMapping.truck_code) == truck_code,
+            DriverMapping.status == DriverMappingStatusEnum.ACTIVE,
+            DriverMapping.is_active == True,
+        ).first()
+        if mapping is None:
+            return None, None, "UNASSIGNED", assignment_reason, sage_driver_code, truck_code
 
     resolved_driver = db.query(User).filter(
         User.id == mapping.user_id,
@@ -301,6 +396,58 @@ def _serialize_program(program: Program) -> dict:
     return ProgramResponse.model_validate(program).model_dump(mode="json")
 
 
+@router.post("/sage/programs/raw")
+def upsert_sage_program_raw(
+    raw_payload: SageRawProgramInbound,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """
+    Endpoint qui accepte le JSON natif Sage X3 (header + lines avec noms de
+    champs Sage : YTRSTYP, YNUMPROG, YLIV, YMATCAM, YBPC, YITMREF, YQTY…).
+    Le backend normalise automatiquement vers le format interne puis délègue
+    au traitement standard upsert_sage_program.
+    """
+    sage_service = SageX3Service(db)
+    if not sage_service.validate_inbound_headers(request.headers):
+        raise HTTPException(status_code=401, detail="Invalid Sage X3 token")
+
+    # Normaliser le payload Sage brut
+    normalized = normalize_sage_raw_to_inbound(raw_payload)
+
+    # Résoudre le depot_id à partir du code site YFCY
+    site_code = raw_payload.header.YFCY.strip().upper()
+    depot = db.query(Depot).filter(
+        func.upper(Depot.site_code) == site_code
+    ).first()
+    if depot is None and raw_payload.header.YFCYNAM:
+        # Fallback : chercher par nom (ex: YFCYNAM="Depot Balole")
+        depot = db.query(Depot).filter(
+            Depot.name.ilike(f"%{raw_payload.header.YFCYNAM}%")
+        ).first()
+        # Mémoriser le site_code pour les prochains appels
+        if depot is not None:
+            depot.site_code = site_code
+            db.flush()
+    if depot is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Aucun dépôt trouvé pour YFCY='{site_code}' / YFCYNAM='{raw_payload.header.YFCYNAM or ''}'. "
+                   f"Créez le dépôt ou vérifiez le nom dans l'admin.",
+        )
+
+    normalized.depot_id = depot.id
+
+    # Auto-incrémenter sync_version si le programme existe déjà
+    existing_program = db.query(Program).filter(
+        Program.program_code == normalized.program_code
+    ).first()
+    if existing_program is not None:
+        normalized.sync_version = existing_program.sync_version + 1
+
+    return _process_sage_program(normalized, db)
+
+
 @router.post("/sage/programs")
 def upsert_sage_program(
     payload: SageProgramInbound,
@@ -311,6 +458,11 @@ def upsert_sage_program(
     if not sage_service.validate_inbound_headers(request.headers):
         raise HTTPException(status_code=401, detail="Invalid Sage X3 token")
 
+    return _process_sage_program(payload, db)
+
+
+def _process_sage_program(payload: SageProgramInbound, db: Session):
+    """Logique métier partagée par /sage/programs et /sage/programs/raw."""
     depot = db.query(Depot).filter(Depot.id == payload.depot_id).first()
     if depot is None:
         raise HTTPException(status_code=404, detail=f"Depot introuvable: {payload.depot_id}")
@@ -461,6 +613,96 @@ def upsert_sage_program(
         "replayed": existing_message is not None,
         "program": _serialize_program(program),
     }
+
+
+def _build_sage_program_payload_from_sql(program: dict, db: Session) -> SageProgramInbound:
+    site_code = (program.get("site") or "").strip().upper()
+    if not site_code:
+        raise ValueError("Le programme Sage doit contenir un code de site YFCY")
+
+    depot = db.query(Depot).filter(func.upper(Depot.site_code) == site_code).first()
+    if depot is None:
+        raise ValueError(f"Dépôt introuvable pour site Sage '{site_code}'")
+
+    program_code = (program.get("program_code") or "").strip()
+    existing_program = db.query(Program).filter(Program.program_code == program_code).first()
+    payload = {
+        "program_code": program_code,
+        "program_type": program.get("program_type", "DELIVERY"),
+        "site": site_code,
+        "date": program.get("date"),
+        "time": program.get("time"),
+        "depot_id": depot.id,
+        "sage_driver_code": program.get("sage_driver_code"),
+        "truck_code": program.get("truck_code"),
+        "transporter": program.get("transporter"),
+        "status": "active",
+        "source_updated_at": utc_now(),
+        "sync_version": (existing_program.sync_version + 1) if existing_program else 1,
+        "lines": [],
+    }
+
+    for line in program.get("lines", []):
+        line_number = line.get("line")
+        line_code = f"{program_code}:{line_number}" if line_number is not None else None
+        client_code = (line.get("client_code") or "").strip()
+        product_code = (line.get("article") or line.get("product_code") or "").strip() or "UNKNOWN"
+        payload["lines"].append({
+            "external_line_id": (line.get("num_fiche") or "").strip() or None,
+            "line_code": line_code,
+            "client_id": client_code or None,
+            "client_code": client_code or None,
+            "client_name": client_code or f"Client_{line_number}",
+            "destination_address": (line.get("zone") or "").strip() or None,
+            "zone": (line.get("zone") or "").strip() or None,
+            "product_code": product_code,
+            "product_label": None,
+            "article": product_code,
+            "quantity_planned": int(float(line.get("quantite") or 0)),
+            "quantity_delivered": 0,
+            "quantity_collected": 0,
+            "delivery_mode": (line.get("mode_livr") or "").strip() or None,
+            "collection_sheet": (line.get("num_fiche") or "").strip() or None,
+            "comment": (line.get("designation") or "").strip() or None,
+        })
+
+    return SageProgramInbound.model_validate(payload)
+
+
+def sync_sage_programs_from_sql(db: Session) -> dict:
+    programs = lire_programmes_du_jour()
+    result = {
+        "synced": 0,
+        "created": 0,
+        "updated": 0,
+        "errors": [],
+    }
+
+    for program in programs:
+        try:
+            payload = _build_sage_program_payload_from_sql(program, db)
+            response = _process_sage_program(payload, db)
+            result["synced"] += 1
+            if response.get("status") == "created":
+                result["created"] += 1
+            else:
+                result["updated"] += 1
+        except Exception as exc:
+            logger.error(f"[SAGE SQL SYNC] Erreur programme {program.get('program_code')}: {exc}")
+            result["errors"].append({
+                "program_code": program.get("program_code"),
+                "error": str(exc),
+            })
+
+    return result
+
+
+@router.post("/sage/sync-today")
+def sync_sage_programs_today(
+    db: Session = Depends(get_db),
+    current_user=Depends(require_role(RoleEnum.ADMIN)),
+):
+    return sync_sage_programs_from_sql(db)
 
 
 @router.get("/programs", response_model=list[ProgramResponse])

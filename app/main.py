@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.database import Base, engine
 from app.routers import auth, admin, ravitailleur, depot, user, user_public, driver, tracking, logistics, integration
+from app.services.sage_sync_scheduler import start_sage_sql_sync_task, stop_sage_sql_sync_task
 from app.websocket_manager import manager
 from app import models  # Import des modèles AVANT create_all
 
@@ -34,6 +35,14 @@ app.include_router(logistics.router)
 app.include_router(integration.router)
 app.include_router(user.router)
 app.include_router(user_public.router)  # Nouveau router public sans auth
+
+@app.on_event("startup")
+async def startup_event():
+    start_sage_sql_sync_task(app)
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await stop_sage_sql_sync_task(app)
 
 # WebSocket global
 @app.websocket("/ws/admin/{user_id}")

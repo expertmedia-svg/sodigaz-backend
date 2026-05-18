@@ -15,10 +15,17 @@ from app.schemas import (
     TruckCreate, TruckResponse,
     DriverMappingCreate, DriverMappingResponse,
     DeliveryCreate, DeliveryUpdate, DeliveryResponse,
-    GPSLogResponse, UserResponse, SageMissionResponse, SageMissionApprovalResponse
+    GPSLogResponse, UserResponse, SageMissionResponse, SageMissionApprovalResponse,
+    SageSqlSyncScheduleResponse, SageSqlSyncScheduleUpdate
 )
 from app.auth import require_role, hash_password
 from app.services.outbox_worker import check_sage_x3_health, process_pending_outbox_events
+from app.services.sage_sql_service import check_sage_sql_connection, get_sage_sql_connection
+from app.services.sage_sync_scheduler import (
+    calculate_next_run_time,
+    get_sage_sql_daily_sync_config,
+    update_sage_sql_daily_sync_config,
+)
 from app.time_utils import utc_now, utc_now_iso
 from app.websocket_manager import manager
 from import_locator_csv import import_depots_csv_text
@@ -218,6 +225,51 @@ def update_depot_manager(
     db.refresh(user)
 
     return UserResponse.from_orm(user)
+
+
+@router.get("/integration/sage-schedule", response_model=SageSqlSyncScheduleResponse)
+def get_sage_sql_schedule(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(RoleEnum.ADMIN)),
+):
+    config = get_sage_sql_daily_sync_config(db)
+    next_run = calculate_next_run_time(config.run_time) if config.enabled else None
+    return SageSqlSyncScheduleResponse(
+        enabled=config.enabled,
+        run_time=config.run_time,
+        next_run_at=next_run,
+        description=config.description,
+    )
+
+
+@router.get("/integration/sage-sql-health")
+def get_sage_sql_health(
+    current_user: User = Depends(require_role(RoleEnum.ADMIN)),
+):
+    return check_sage_sql_connection()
+
+
+@router.put("/integration/sage-schedule", response_model=SageSqlSyncScheduleResponse)
+def update_sage_sql_schedule(
+    schedule_data: SageSqlSyncScheduleUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(RoleEnum.ADMIN)),
+):
+    if schedule_data.run_time is None and schedule_data.enabled is None:
+        raise HTTPException(status_code=400, detail="Au moins un champ doit être fourni")
+
+    config = update_sage_sql_daily_sync_config(
+        db,
+        run_time=schedule_data.run_time,
+        enabled=schedule_data.enabled,
+    )
+    next_run = calculate_next_run_time(config.run_time) if config.enabled else None
+    return SageSqlSyncScheduleResponse(
+        enabled=config.enabled,
+        run_time=config.run_time,
+        next_run_at=next_run,
+        description=config.description,
+    )
 
 
 # --- SUPPRESSION DÉPÔT ---
@@ -1455,13 +1507,285 @@ def reject_sage_mission(
     db.add(outbox_event)
     db.commit()
     db.refresh(mission)
-    
+
     return SageMissionApprovalResponse(
         success=True,
         message=f"Mission {mission_id} rejetée",
         mission_id=mission_id,
         delivery_id=mission.id
     )
+
+
+# --- SYNCHRONISATION CHAUFFEURS SAGE ---
+
+class SageDriverSyncResponse(BaseModel):
+    success: bool
+    message: str
+    sage_codes_found: int
+    drivers_created: int
+    drivers_reactivated: int
+    drivers_existing: int
+    drivers: list[dict] = []
+
+@router.get("/sync-sage-drivers", response_model=SageDriverSyncResponse)
+def sync_sage_drivers(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(RoleEnum.ADMIN))
+):
+    """
+    Lit tous les codes YLIV uniques depuis Sage SQL et crée/réactive les chauffeurs.
+    Crée automatiquement les mappages chauffeur/camion si besoin.
+    """
+    from app.services.sage_sql_service import get_sage_sql_connection
+
+    try:
+        # 1. Lire les codes YLIV uniques depuis Sage
+        conn = get_sage_sql_connection()
+        cursor = conn.cursor()
+        db_sage = "SAGEX3V12"
+        schema = "SCHEM001"
+
+        cursor.execute(f"""
+            SELECT DISTINCT UPPER(YLIV_0)
+            FROM {db_sage}.{schema}.YPRGCOLL
+            WHERE YLIV_0 IS NOT NULL AND YLIV_0 != ''
+            ORDER BY YLIV_0
+        """)
+
+        sage_codes = [row[0].strip() for row in cursor.fetchall()]
+        conn.close()
+
+        if not sage_codes:
+            return SageDriverSyncResponse(
+                success=False,
+                message="Aucun code chauffeur trouvé dans Sage SQL",
+                sage_codes_found=0,
+                drivers_created=0,
+                drivers_reactivated=0,
+                drivers_existing=0,
+                drivers=[]
+            )
+
+        # 2. Créer/réactiver les chauffeurs
+        created_count = 0
+        reactivated_count = 0
+        existing_count = 0
+        driver_results = []
+
+        for sage_code in sage_codes:
+            normalized = sage_code.lower()
+            email = f"{normalized}@sodigaz-app.local"
+            username = normalized
+            password = f"Code{sage_code.upper()}@2026"
+
+            # Chercher chauffeur existant
+            existing_driver = db.query(User).filter(
+                func.upper(User.email) == email.upper()
+            ).first()
+
+            if existing_driver:
+                if existing_driver.role == RoleEnum.RAVITAILLEUR and existing_driver.is_active:
+                    existing_count += 1
+                    driver_results.append({
+                        "sage_code": sage_code,
+                        "user_id": existing_driver.id,
+                        "email": existing_driver.email,
+                        "status": "existing",
+                        "message": f"Chauffeur existe déjà (ID: {existing_driver.id})"
+                    })
+                elif not existing_driver.is_active:
+                    existing_driver.is_active = True
+                    db.flush()
+                    reactivated_count += 1
+                    driver_results.append({
+                        "sage_code": sage_code,
+                        "user_id": existing_driver.id,
+                        "email": existing_driver.email,
+                        "status": "reactivated",
+                        "message": f"Chauffeur réactivé (ID: {existing_driver.id})"
+                    })
+            else:
+                # Créer le chauffeur
+                driver = User(
+                    email=email,
+                    username=username,
+                    hashed_password=hash_password(password),
+                    full_name=f"Chauffeur {sage_code}",
+                    phone=None,
+                    role=RoleEnum.RAVITAILLEUR,
+                    is_active=True,
+                )
+                db.add(driver)
+                db.flush()
+                created_count += 1
+                driver_results.append({
+                    "sage_code": sage_code,
+                    "user_id": driver.id,
+                    "email": email,
+                    "password": password,
+                    "status": "created",
+                    "message": f"Chauffeur créé (ID: {driver.id})"
+                })
+
+        db.commit()
+
+        return SageDriverSyncResponse(
+            success=True,
+            message=f"Synchronisation réussie: {created_count} créés, {reactivated_count} réactivés, {existing_count} existants",
+            sage_codes_found=len(sage_codes),
+            drivers_created=created_count,
+            drivers_reactivated=reactivated_count,
+            drivers_existing=existing_count,
+            drivers=driver_results
+        )
+
+    except Exception as e:
+        db.rollback()
+        import traceback
+        error_detail = f"{str(e)}\n{traceback.format_exc()}"
+        return SageDriverSyncResponse(
+            success=False,
+            message=f"Erreur lors de la synchronisation: {str(e)}",
+            sage_codes_found=0,
+            drivers_created=0,
+            drivers_reactivated=0,
+            drivers_existing=0,
+            drivers=[]
+        )
+
+
+class DriverMappingSuggestion(BaseModel):
+    sage_driver_code: str
+    truck_code: str
+    user_id: int
+    user_email: str
+    auto_created: bool
+
+
+class SageMappingSyncResponse(BaseModel):
+    success: bool
+    message: str
+    mappings_created: int
+    mappings_activated: int
+    suggestions: list[DriverMappingSuggestion] = []
+
+
+@router.post("/sync-sage-mappings", response_model=SageMappingSyncResponse)
+def sync_sage_mappings(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(RoleEnum.ADMIN))
+):
+    """
+    Crée automatiquement les mappages chauffeur/camion pour tous les programmes Sage
+    en utilisant les codes chauffeur (YLIV) lus depuis Sage SQL.
+    """
+    from app.services.sage_sql_service import get_sage_sql_connection
+
+    try:
+        conn = get_sage_sql_connection()
+        cursor = conn.cursor()
+        db_sage = "SAGEX3V12"
+        schema = "SCHEM001"
+
+        # Lire tous les programmes Sage avec YLIV et YMATCAM
+        cursor.execute(f"""
+            SELECT DISTINCT
+                UPPER(YLIV_0) as sage_driver_code,
+                UPPER(YMATCAM_0) as truck_code,
+                YPROGCOLL_0 as program_code
+            FROM {db_sage}.{schema}.YPRGCOLL
+            WHERE YLIV_0 IS NOT NULL AND YLIV_0 != ''
+            AND YMATCAM_0 IS NOT NULL AND YMATCAM_0 != ''
+            ORDER BY YLIV_0, YMATCAM_0
+        """)
+
+        programs = cursor.fetchall()
+        conn.close()
+
+        mappings_created = 0
+        mappings_activated = 0
+        suggestions = []
+
+        for sage_code, truck_code, program_code in programs:
+            sage_code = sage_code.strip()
+            truck_code = truck_code.strip()
+            program_code = program_code.strip() if program_code else "unknown"
+
+            # Chercher si le mapping existe
+            existing_mapping = db.query(DriverMapping).filter(
+                func.upper(DriverMapping.sage_driver_code) == sage_code.upper(),
+                func.upper(DriverMapping.truck_code) == truck_code.upper(),
+            ).first()
+
+            if existing_mapping:
+                if not existing_mapping.is_active or existing_mapping.status == DriverMappingStatusEnum.INACTIVE:
+                    existing_mapping.is_active = True
+                    existing_mapping.status = DriverMappingStatusEnum.ACTIVE
+                    mappings_activated += 1
+            else:
+                # Chercher ou créer le chauffeur
+                normalized_code = sage_code.lower()
+                email = f"{normalized_code}@sodigaz-app.local"
+
+                driver = db.query(User).filter(
+                    func.upper(User.email) == email.upper(),
+                    User.role == RoleEnum.RAVITAILLEUR,
+                    User.is_active == True,
+                ).first()
+
+                if driver:
+                    # Chercher ou créer le camion
+                    truck = db.query(Truck).filter(
+                        func.upper(Truck.license_plate) == truck_code.upper(),
+                        Truck.is_active == True,
+                    ).first()
+
+                    if not truck:
+                        truck = Truck(license_plate=truck_code, is_active=True)
+                        db.add(truck)
+                        db.flush()
+
+                    # Créer le mapping
+                    new_mapping = DriverMapping(
+                        user_id=driver.id,
+                        sage_driver_code=sage_code,
+                        truck_code=truck_code,
+                        is_active=True,
+                        status=DriverMappingStatusEnum.ACTIVE,
+                        auto_created=True,
+                        source_program_code=program_code,
+                    )
+                    db.add(new_mapping)
+                    mappings_created += 1
+
+                    suggestions.append(DriverMappingSuggestion(
+                        sage_driver_code=sage_code,
+                        truck_code=truck_code,
+                        user_id=driver.id,
+                        user_email=driver.email,
+                        auto_created=True,
+                    ))
+
+        db.commit()
+
+        return SageMappingSyncResponse(
+            success=True,
+            message=f"Synchronisation des mappages: {mappings_created} créés, {mappings_activated} activés",
+            mappings_created=mappings_created,
+            mappings_activated=mappings_activated,
+            suggestions=suggestions,
+        )
+
+    except Exception as e:
+        db.rollback()
+        import traceback
+        return SageMappingSyncResponse(
+            success=False,
+            message=f"Erreur lors du sync des mappages: {str(e)}",
+            mappings_created=0,
+            mappings_activated=0,
+            suggestions=[],
+        )
 
 
 # ===========================================================================

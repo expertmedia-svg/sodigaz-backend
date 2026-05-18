@@ -78,3 +78,27 @@ def login(credentials: UserLogin, db: Session = Depends(get_db)):
 @router.get("/me", response_model=UserResponse)
 def get_me(current_user: User = Depends(get_current_user)):
     return UserResponse.model_validate(current_user)
+
+@router.post("/change-password")
+def change_password(
+    payload: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    current_password = payload.get("current_password", "")
+    new_password = payload.get("new_password", "")
+
+    if not verify_password(current_password, current_user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Mot de passe actuel incorrect"
+        )
+    if len(new_password) < 6:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Le nouveau mot de passe doit contenir au moins 6 caractères"
+        )
+
+    current_user.hashed_password = hash_password(new_password)
+    db.commit()
+    return {"message": "Mot de passe modifié avec succès"}

@@ -22,16 +22,23 @@ from app.models import (
     SageMissionStatusEnum,
     IntegrationOutbox,
 )
+import logging
+
 from app.auth import get_current_user, verify_password, create_access_token
 from app.services.pricing_service import resolve_program_line_amount
 from app.services.outbox_worker import process_pending_outbox_events
+from app.services.sage_sql_service import valider_programme_sage
 from app.time_utils import utc_now, utc_now_iso
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 class LoginRequest(BaseModel):
     email: str
     password: str
+
+class ProgramCompleteRequest(BaseModel):
+    program_code: str
 
 class CompleteDeliveryRequest(BaseModel):
     latitude: float
@@ -276,37 +283,82 @@ def _load_driver_today_programs(db: Session, driver_id: int) -> list[dict[str, A
     return [_serialize_driver_program(program) for program in programs]
 
 
-def _refresh_program_status(program: Optional[Program]) -> None:
+def _refresh_program_status(program: Optional[Program], db: Session) -> None:
     if program is None:
         return
 
+    previous_status = program.status
     active_lines = [line for line in program.lines if line.status != "cancelled"]
     if not active_lines:
         program.status = "completed"
+    else:
+        fully_processed = []
+        partially_processed = False
+        for line in active_lines:
+            if program.program_type == ProgramTypeEnum.COLLECTION:
+                quantity_done = line.quantity_collected or 0
+            else:
+                quantity_done = line.quantity_delivered or 0
+
+            if quantity_done >= (line.quantity_planned or 0) and (line.quantity_planned or 0) > 0:
+                fully_processed.append(True)
+            else:
+                fully_processed.append(False)
+
+            if quantity_done > 0:
+                partially_processed = True
+
+        if all(fully_processed):
+            program.status = "completed"
+        elif partially_processed:
+            program.status = "in_progress"
+        else:
+            program.status = "active"
+
+    if program.status == "completed" and previous_status != "completed":
+        _validate_sage_program_completion(program, db)
+
+
+def _validate_sage_program_completion(program: Program, db: Session) -> None:
+    if program.source_system != "sage_x3" or not program.program_code:
         return
 
-    fully_processed = []
-    partially_processed = False
-    for line in active_lines:
-        if program.program_type == ProgramTypeEnum.COLLECTION:
-            quantity_done = line.quantity_collected or 0
+    try:
+        validation_status = valider_programme_sage(program.program_code)
+        if program.source_payload is None:
+            program.source_payload = {}
+        program.source_payload["sage_validation"] = {
+            "status": validation_status,
+            "validated_at": utc_now_iso(),
+        }
+        logger.info(
+            "Programme Sage %s complété ; validation SQL appelée : %s",
+            program.program_code,
+            validation_status,
+        )
+        if validation_status == "OK":
+            program.status = "completed"
+        elif validation_status == "ALREADY_VALIDATED":
+            program.status = "completed"
         else:
-            quantity_done = line.quantity_delivered or 0
-
-        if quantity_done >= (line.quantity_planned or 0) and (line.quantity_planned or 0) > 0:
-            fully_processed.append(True)
-        else:
-            fully_processed.append(False)
-
-        if quantity_done > 0:
-            partially_processed = True
-
-    if all(fully_processed):
-        program.status = "completed"
-    elif partially_processed:
-        program.status = "in_progress"
-    else:
-        program.status = "active"
+            logger.warning(
+                "Validation Sage failed for programme %s: %s",
+                program.program_code,
+                validation_status,
+            )
+    except Exception as exc:
+        logger.error(
+            "Erreur lors de la validation Sage pour programme %s: %s",
+            program.program_code,
+            exc,
+        )
+        if program.source_payload is None:
+            program.source_payload = {}
+        program.source_payload["sage_validation"] = {
+            "status": "ERROR",
+            "error": str(exc),
+            "validated_at": utc_now_iso(),
+        }
 
 def _register_conflict(
     db: Session,
@@ -597,12 +649,22 @@ def _process_delivery_confirmation(
                 "tax_amount": str(amount_summary["tax_amount"]) if amount_summary else None,
                 "unit_price": str(amount_summary["unit_price"]) if amount_summary else None,
                 "tax_rate": str(amount_summary["tax_rate"]) if amount_summary else None,
+                # Champs Sage natifs pour que Sage retrouve directement ses lignes
+                "sage_program_code": delivery.program.program_code if delivery.program else None,
+                "sage_site_code": delivery.program.site_code if delivery.program else None,
+                "sage_driver_code": (delivery.program.source_payload or {}).get("assignment", {}).get("sage_driver_code") if delivery.program else None,
+                "sage_truck_code": (delivery.program.source_payload or {}).get("assignment", {}).get("truck_code") if delivery.program else None,
+                "sage_client_code": delivery.program_line.client_code if delivery.program_line else None,
+                "sage_product_code": delivery.program_line.product_code if delivery.program_line else None,
+                "sage_external_line_id": delivery.program_line.external_line_id if delivery.program_line else None,
+                "sage_line_code": delivery.program_line.line_code if delivery.program_line else None,
+                "sage_quantity_planned": delivery.program_line.quantity_planned if delivery.program_line else None,
             },
             status="pending",
         )
     )
 
-    _refresh_program_status(delivery.program)
+    _refresh_program_status(delivery.program, db=db)
 
     return _build_operation_result(
         operation.idempotency_key,
@@ -1318,39 +1380,21 @@ def complete_delivery(
         # Marquer la mission comme téléchargée dans Sage status
         delivery.external_status = SageMissionStatusEnum.SYNCED
     
+    if delivery.program:
+        _refresh_program_status(delivery.program, db=db)
+
     db.commit()
-    
-    return {
-        "message": "Livraison terminée avec succès",
-        "status": delivery.status.value,
-        "distance": int(distance),
-        "sage_synced": delivery.source_type == "sage_inbound"
+    result = {
+        "id": delivery.id,
+        "external_delivery_id": delivery.external_delivery_id,
+        "status": delivery.status.value if hasattr(delivery.status, "value") else delivery.status,
+        "external_status": delivery.external_status.value if delivery.external_status else None,
+        "scheduled_time": delivery.scheduled_date.isoformat() if delivery.scheduled_date else None,
+        "completed_at": delivery.actual_end.isoformat() if delivery.actual_end else None,
+        "depot_id": delivery.depot_id,
+        "depot_name": depot.name if depot else "Dépôt inconnu",
+        "quantity_6kg": delivery.quantity_6kg,
+        "quantity_12kg": delivery.quantity_12kg,
     }
 
-@router.get("/history")
-def get_my_history(
-    current_user: User = Depends(require_driver_role),
-    db: Session = Depends(get_db)
-):
-    """Historique des livraisons terminées"""
-    deliveries = db.query(Delivery).filter(
-        Delivery.driver_id == current_user.id,
-        Delivery.status == DeliveryStatusEnum.COMPLETED
-    ).order_by(Delivery.actual_end.desc()).limit(50).all()
-    
-    result = []
-    for delivery in deliveries:
-        depot = db.query(Depot).filter(Depot.id == delivery.depot_id).first()
-        
-        result.append({
-            "id": delivery.id,
-            "status": delivery.status.value,
-            "scheduled_time": delivery.scheduled_date.isoformat() if delivery.scheduled_date else None,
-            "completed_at": delivery.actual_end.isoformat() if delivery.actual_end else None,
-            "depot_id": delivery.depot_id,
-            "depot_name": depot.name if depot else "Dépôt inconnu",
-            "quantity_6kg": delivery.quantity_6kg,
-            "quantity_12kg": delivery.quantity_12kg,
-        })
-    
     return result

@@ -38,6 +38,27 @@ class TokenResponse(BaseModel):
     token_type: str
     user: UserResponse
 
+class SageSqlSyncScheduleResponse(BaseModel):
+    enabled: bool
+    run_time: str
+    next_run_at: Optional[datetime] = None
+    description: Optional[str] = None
+
+class SageSqlSyncScheduleUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    run_time: Optional[str] = None
+
+    @field_validator("run_time")
+    @staticmethod
+    def validate_run_time(value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        try:
+            datetime.strptime(value, "%H:%M")
+        except ValueError as exc:
+            raise ValueError("Le format de l'heure doit être HH:MM") from exc
+        return value
+
 # DEPOT
 class DepotCreate(BaseModel):
     name: str
@@ -331,6 +352,97 @@ class SageProgramInbound(BaseModel):
         if normalized in {"DELIVERY", "PRES"}:
             return ProgramTypeEnum.DELIVERY
         return value
+
+
+# ── Schémas pour le format JSON brut Sage X3 ──────────────────────────────────
+
+class SageRawLineInbound(BaseModel):
+    """Ligne brute telle que Sage X3 l'envoie (noms de champs Sage)."""
+    YBPC: Optional[str] = None
+    YBPCNAM: Optional[str] = "Client inconnu"
+    YSOHNUM: Optional[str] = None
+    YSOPLIN: Optional[str] = None
+    YPLV: Optional[str] = None
+    YQUARTIER: Optional[str] = None
+    YMOD: Optional[str] = None
+    YITMREF: str
+    YITMDES: Optional[str] = None
+    YQTY: int = 0
+    YNUMFICHE: Optional[str] = None
+    YDES: Optional[str] = None
+
+    model_config = ConfigDict(extra="allow")
+
+
+class SageRawHeaderInbound(BaseModel):
+    """Entête brut telle que Sage X3 l'envoie."""
+    YTRSTYP: str
+    YNUMPROG: str
+    YSTA: Optional[str] = None
+    YFCY: str
+    YFCYNAM: Optional[str] = None
+    YDATE: str
+    YTIME: Optional[str] = None
+    YLIV: Optional[str] = None
+    YLIVNAM: Optional[str] = None
+    YMATCAM: Optional[str] = None
+    YCAMLIB: Optional[str] = None
+
+    model_config = ConfigDict(extra="allow")
+
+
+class SageRawProgramInbound(BaseModel):
+    """Payload complet au format natif Sage X3 (header + lines)."""
+    header: SageRawHeaderInbound
+    lines: list[SageRawLineInbound] = Field(default_factory=list)
+    product_totals: Optional[list[dict]] = None
+
+    model_config = ConfigDict(extra="allow")
+
+
+def normalize_sage_raw_to_inbound(raw: SageRawProgramInbound) -> SageProgramInbound:
+    """Transforme un payload Sage brut en SageProgramInbound normalisé."""
+    h = raw.header
+    is_collection = h.YTRSTYP.strip().upper() in {"PCOL", "COLLECTION"}
+
+    normalized_lines = []
+    for i, line in enumerate(raw.lines):
+        ext_id = None
+        if line.YSOHNUM and line.YSOPLIN:
+            ext_id = f"{line.YSOHNUM}-{line.YSOPLIN}"
+        elif line.YSOHNUM:
+            ext_id = line.YSOHNUM
+        else:
+            ext_id = f"{h.YNUMPROG}-{line.YBPC or 'UNK'}-{i + 1:03d}"
+
+        normalized_lines.append(ProgramLineInbound(
+            external_line_id=ext_id,
+            client_code=line.YBPC,
+            client_name=line.YBPCNAM or "Client inconnu",
+            product_code=line.YITMREF,
+            product_label=line.YITMDES,
+            article=line.YITMREF,
+            zone=line.YQUARTIER,
+            quantity_planned=line.YQTY,
+            delivery_mode=line.YMOD or h.YTRSTYP,
+            collection_sheet=line.YNUMFICHE,
+            comment=line.YDES,
+        ))
+
+    return SageProgramInbound(
+        program_code=h.YNUMPROG,
+        program_type="COLLECTION" if is_collection else "DELIVERY",
+        site=h.YFCY,
+        date=h.YDATE,
+        time=h.YTIME,
+        depot_id=0,  # sera résolu par le code site YFCY dans l'endpoint
+        sage_driver_code=h.YLIV,
+        truck_code=h.YMATCAM,
+        transporter=h.YLIVNAM,
+        status="active",
+        sync_version=1,
+        lines=normalized_lines,
+    )
 
 
 class ProgramAmountResponse(BaseModel):

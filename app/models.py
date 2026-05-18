@@ -95,6 +95,7 @@ class Depot(Base):
     address = Column(String(500))
     city = Column(String(255))
     quartier = Column(String(255), nullable=True)
+    site_code = Column(String(50), nullable=True, unique=True, index=True)
     plv_code = Column(String(100), nullable=True, index=True)
     maps_url = Column(String(1000), nullable=True)
     phone = Column(String(20))
@@ -547,3 +548,14 @@ class IntegrationHealthCheck(Base):
     created_at = Column(DateTime, default=utc_now, nullable=False, index=True)
 
     checker = relationship("User", foreign_keys=[checked_by])
+
+
+class IntegrationSchedule(Base):
+    __tablename__ = "integration_schedules"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(100), nullable=False, unique=True, index=True)
+    enabled = Column(Boolean, nullable=False, default=True)
+    run_time = Column(String(5), nullable=False, default="06:00")
+    description = Column(String(255), nullable=True)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)

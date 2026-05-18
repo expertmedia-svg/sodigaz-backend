@@ -37,7 +37,11 @@ def _send_to_sage_x3(event: IntegrationOutbox, client: httpx.Client) -> dict:
         raise ValueError("SAGE_X3_BASE_URL is not configured")
 
     headers = {"Content-Type": "application/json"}
-    if settings.SAGE_X3_API_KEY:
+    auth = None
+
+    if settings.SAGE_X3_AUTH_SCHEME.lower() == "basic" and settings.SAGE_X3_API_USER:
+        auth = (settings.SAGE_X3_API_USER, settings.SAGE_X3_API_PASSWORD)
+    elif settings.SAGE_X3_API_KEY:
         if settings.SAGE_X3_AUTH_SCHEME.lower() == "bearer":
             headers[settings.SAGE_X3_AUTH_HEADER] = f"Bearer {settings.SAGE_X3_API_KEY}"
         else:
@@ -47,6 +51,7 @@ def _send_to_sage_x3(event: IntegrationOutbox, client: httpx.Client) -> dict:
         f"{settings.SAGE_X3_BASE_URL.rstrip('/')}{endpoint}",
         json=event.payload_json,
         headers=headers,
+        auth=auth,
     )
     response.raise_for_status()
 
@@ -63,14 +68,19 @@ def _send_to_sage_x3(event: IntegrationOutbox, client: httpx.Client) -> dict:
     }
 
 
-def _build_auth_headers() -> dict[str, str]:
+def _build_auth_info() -> tuple[dict[str, str], Optional[tuple[str, str]]]:
     headers = {"Content-Type": "application/json"}
-    if settings.SAGE_X3_API_KEY:
+    auth = None
+
+    if settings.SAGE_X3_AUTH_SCHEME.lower() == "basic" and settings.SAGE_X3_API_USER:
+        auth = (settings.SAGE_X3_API_USER, settings.SAGE_X3_API_PASSWORD)
+    elif settings.SAGE_X3_API_KEY:
         if settings.SAGE_X3_AUTH_SCHEME.lower() == "bearer":
             headers[settings.SAGE_X3_AUTH_HEADER] = f"Bearer {settings.SAGE_X3_API_KEY}"
         else:
             headers[settings.SAGE_X3_AUTH_HEADER] = settings.SAGE_X3_API_KEY
-    return headers
+    
+    return headers, auth
 
 
 def _apply_delivery_sync_side_effect(db: Session, event: IntegrationOutbox) -> None:
@@ -120,7 +130,8 @@ def check_sage_x3_health(client: Optional[httpx.Client] = None) -> dict:
     try:
         endpoint = settings.SAGE_X3_HEALTH_ENDPOINT or ""
         url = f"{settings.SAGE_X3_BASE_URL.rstrip('/')}{endpoint}"
-        response = http_client.get(url, headers=_build_auth_headers())
+        headers, auth = _build_auth_info()
+        response = http_client.get(url, headers=headers, auth=auth)
         response.raise_for_status()
         try:
             payload = response.json()
