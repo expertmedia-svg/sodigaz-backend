@@ -28,6 +28,7 @@ from app.services.sage_sync_scheduler import (
 )
 from app.time_utils import utc_now, utc_now_iso
 from app.websocket_manager import manager
+from app.config import settings
 from import_locator_csv import import_depots_csv_text
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -1542,14 +1543,13 @@ def sync_sage_drivers(
         # 1. Lire les codes YLIV uniques depuis Sage
         conn = get_sage_sql_connection()
         cursor = conn.cursor()
-        db_sage = "SAGEX3V12"
-        schema = "SCHEM001"
+        schema = settings.SAGE_SQL_SCHEMA
 
         cursor.execute(f"""
-            SELECT DISTINCT UPPER(YLIV_0)
-            FROM {db_sage}.{schema}.YPRGCOLL
+            SELECT DISTINCT UPPER(YLIV_0) as yliv
+            FROM [{schema}].[YPRGCOLL]
             WHERE YLIV_0 IS NOT NULL AND YLIV_0 != ''
-            ORDER BY YLIV_0
+            ORDER BY yliv
         """)
 
         sage_codes = [row[0].strip() for row in cursor.fetchall()]
@@ -1684,8 +1684,7 @@ def sync_sage_mappings(
     try:
         conn = get_sage_sql_connection()
         cursor = conn.cursor()
-        db_sage = "SAGEX3V12"
-        schema = "SCHEM001"
+        schema = settings.SAGE_SQL_SCHEMA
 
         # Lire tous les programmes Sage avec YLIV et YMATCAM
         cursor.execute(f"""
@@ -1693,10 +1692,10 @@ def sync_sage_mappings(
                 UPPER(YLIV_0) as sage_driver_code,
                 UPPER(YMATCAM_0) as truck_code,
                 YPROGCOLL_0 as program_code
-            FROM {db_sage}.{schema}.YPRGCOLL
+            FROM [{schema}].[YPRGCOLL]
             WHERE YLIV_0 IS NOT NULL AND YLIV_0 != ''
             AND YMATCAM_0 IS NOT NULL AND YMATCAM_0 != ''
-            ORDER BY YLIV_0, YMATCAM_0
+            ORDER BY sage_driver_code, truck_code
         """)
 
         programs = cursor.fetchall()
