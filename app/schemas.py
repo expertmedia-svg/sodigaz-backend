@@ -29,7 +29,7 @@ class UserResponse(OrmModel):
     id: int
     email: str
     username: Optional[str] = None
-    full_name: str
+    full_name: Optional[str] = None
     role: RoleEnum
     is_active: bool
     
