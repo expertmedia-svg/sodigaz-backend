@@ -1686,12 +1686,11 @@ def sync_sage_mappings(
         cursor = conn.cursor()
         schema = settings.SAGE_SQL_SCHEMA
 
-        # Lire tous les programmes Sage avec YLIV et YMATCAM
+        # Lire tous les mappages uniques driver/truck depuis Sage
         cursor.execute(f"""
             SELECT DISTINCT
                 UPPER(YLIV_0) as sage_driver_code,
-                UPPER(YMATCAM_0) as truck_code,
-                YPROGCOLL_0 as program_code
+                UPPER(YMATCAM_0) as truck_code
             FROM [{schema}].[YPRGCOLL]
             WHERE YLIV_0 IS NOT NULL AND YLIV_0 != ''
             AND YMATCAM_0 IS NOT NULL AND YMATCAM_0 != ''
@@ -1705,10 +1704,10 @@ def sync_sage_mappings(
         mappings_activated = 0
         suggestions = []
 
-        for sage_code, truck_code, program_code in programs:
+        for sage_code, truck_code in programs:
             sage_code = sage_code.strip()
             truck_code = truck_code.strip()
-            program_code = program_code.strip() if program_code else "unknown"
+            program_code = "mapped_from_sage"
 
             # Chercher si le mapping existe
             existing_mapping = db.query(DriverMapping).filter(
