@@ -566,11 +566,7 @@ def _process_sage_program(payload: SageProgramInbound, db: Session):
             program_line.comment = inbound_line.comment
             db.flush()
 
-        # Skip if total quantity is 0 (no delivery needed)
-        if total_qty_6kg == 0 and total_qty_12kg == 0:
-            continue
-
-        # Create 1 delivery with Sage-planned quantities (driver will update actual on delivery completion)
+        # Create 1 delivery with quantities = 0 (driver will fill in actual quantities)
         pricing_rule = resolve_active_pricing_rule(
             db,
             product_code=first_line.product_code,
@@ -580,13 +576,9 @@ def _process_sage_program(payload: SageProgramInbound, db: Session):
         unit_price = pricing_rule.unit_price if pricing_rule else (first_line.unit_price or 0)
         tax_rate = pricing_rule.tax_rate if pricing_rule else (first_line.tax_rate or 0)
 
-        amounts = calculate_delivery_amount(
-            quantity_delivered=total_qty_6kg + total_qty_12kg,
-            unit_price=unit_price,
-            tax_rate=tax_rate,
-        ) if program_type == ProgramTypeEnum.DELIVERY else _empty_amounts()
+        amounts = _empty_amounts()
 
-        # Create single delivery with planned quantities (by client + location)
+        # Create single delivery with 0 quantities (by client + location)
         location_key_str = f"{location_key[0]}:{location_key[1]}"
         delivery = db.query(Delivery).filter(
             Delivery.program_id == program.id,
@@ -604,9 +596,9 @@ def _process_sage_program(payload: SageProgramInbound, db: Session):
                 contact_name=first_line.contact_name,
                 contact_phone=first_line.contact_phone,
                 driver_id=program.driver_id,
-                quantity_6kg=total_qty_6kg,
-                quantity_12kg=total_qty_12kg,
-                quantity=total_qty_6kg + total_qty_12kg,
+                quantity_6kg=0,
+                quantity_12kg=0,
+                quantity=0,
                 status=DeliveryStatusEnum.PENDING,
                 source_type="sage_inbound",
                 external_status=SageMissionStatusEnum.PENDING_APPROVAL,
