@@ -795,6 +795,22 @@ def get_current_driver(current_user: User = Depends(require_driver_role)):
         "role": current_user.role.value
     }
 
+@router.post("/refresh")
+def refresh_driver_token(current_user: User = Depends(require_driver_role)):
+    """Refresh access token pour ravitailleur"""
+    access_token = create_access_token(data={"sub": str(current_user.id)})
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": {
+            "id": current_user.id,
+            "email": current_user.email,
+            "full_name": current_user.full_name,
+            "role": current_user.role.value
+        }
+    }
+
 
 def _resolve_driver_operational_truck(
     db: Session,
