@@ -96,10 +96,10 @@ def lire_programmes_du_jour() -> list[dict[str, Any]]:
                     d.YDES_0,
                     d.YSMREMB_0
                 FROM [{schema}].[YPRGCOLLD] d
-                WHERE d.YPROGCOLL_0 = ?
+                WHERE d.YPROGCOLL_0 = %s
                 ORDER BY d.YLIGNE_0
                 """,
-                program_code,
+                (program_code,)
             )
 
             lignes = []
@@ -146,8 +146,8 @@ def valider_programme_sage(num_programme: str) -> str:
         schema = settings.SAGE_SQL_SCHEMA
 
         cursor.execute(
-            f"SELECT YPROGCOLL_0, YFLGVAL2_0 FROM [{schema}].[YPRGCOLL] WHERE YPROGCOLL_0 = ?",
-            num_programme.strip(),
+            f"SELECT YPROGCOLL_0, YFLGVAL2_0 FROM [{schema}].[YPRGCOLL] WHERE YPROGCOLL_0 = %s",
+            (num_programme.strip(),)
         )
         row = cursor.fetchone()
         if row is None:
@@ -158,8 +158,8 @@ def valider_programme_sage(num_programme: str) -> str:
             return "ALREADY_VALIDATED"
 
         cursor.execute(
-            f"UPDATE [{schema}].[YPRGCOLL] SET YFLGVAL2_0 = 2 WHERE YPROGCOLL_0 = ?",
-            num_programme.strip(),
+            f"UPDATE [{schema}].[YPRGCOLL] SET YFLGVAL2_0 = 2 WHERE YPROGCOLL_0 = %s",
+            (num_programme.strip(),)
         )
         conn.commit()
         logger.info(f"[SAGE SQL] Programme {num_programme} validé — YFLGVAL2_0=2")
