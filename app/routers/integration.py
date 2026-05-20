@@ -810,7 +810,14 @@ def validate_program_to_sage(
         program.updated_at = utc_now()
         db.commit()
 
-        logger.info(f"[INTEGRATION] Programme {payload.program_code} validé et écrit dans Sage")
+        # ✅ Marque toutes les livraisons du programme comme synchronisées (SYNCED)
+        deliveries = db.query(Delivery).filter(Delivery.program_id == program.id).all()
+        for delivery in deliveries:
+            delivery.external_status = SageMissionStatusEnum.SYNCED
+            delivery.external_sync_at = utc_now()
+        db.commit()
+
+        logger.info(f"[INTEGRATION] Programme {payload.program_code} validé et écrit dans Sage. {len(deliveries)} livraisons marquées SYNCED")
 
         return ValidatedProgramResponse(**result)
     except HTTPException:

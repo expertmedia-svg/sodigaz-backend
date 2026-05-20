@@ -317,6 +317,7 @@ class ProgramLineInbound(BaseModel):
     product_label: Optional[str] = None
     article: Optional[str] = None
     zone: Optional[str] = None
+    plv: Optional[str] = None  # Point de Livraison/Vente code from Sage (YPLV)
     quantity_planned: int = Field(default=0, ge=0)
     quantity_delivered: Optional[int] = Field(default=None, ge=0)
     quantity_collected: Optional[int] = Field(default=None, ge=0)
@@ -426,6 +427,7 @@ def normalize_sage_raw_to_inbound(raw: SageRawProgramInbound) -> SageProgramInbo
             product_label=line.YITMDES,
             article=line.YITMREF,
             zone=line.YQUARTIER,
+            plv=line.YPLV,
             quantity_planned=line.YQTY,
             delivery_mode=line.YMOD or h.YTRSTYP,
             collection_sheet=line.YNUMFICHE,
