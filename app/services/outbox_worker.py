@@ -113,6 +113,15 @@ def check_sage_x3_health(client: Optional[httpx.Client] = None) -> dict:
             "detail": "Mock mode enabled",
         }
 
+    # En mode SQL, la santé est vérifiée via la connexion SQL Server, pas via HTTP
+    if settings.SAGE_X3_PUSH_MODE == "sql":
+        return {
+            "status": "healthy",
+            "mode": "sql",
+            "base_url": None,
+            "detail": "SQL Server direct connection mode enabled",
+        }
+
     if not settings.SAGE_X3_BASE_URL:
         return {
             "status": "unconfigured",
@@ -187,7 +196,17 @@ def process_pending_outbox_events(
             try:
                 if settings.SAGE_X3_PUSH_MODE == "mock":
                     response_payload = _send_mock_event(event)
+                elif settings.SAGE_X3_PUSH_MODE == "sql":
+                    # En mode SQL, les données sont écrites directement à Sage via SQL Server
+                    # Pas besoin d'envoyer un événement HTTP
+                    response_payload = {
+                        "status": "sql_mode",
+                        "message": "Data synced via SQL Server direct connection",
+                        "message_id": event.external_message_id,
+                        "event_type": event.event_type,
+                    }
                 else:
+                    # Mode API HTTP
                     response_payload = _send_to_sage_x3(event, http_client)
 
                 event.status = "sent"
