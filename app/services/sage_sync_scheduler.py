@@ -72,13 +72,19 @@ async def run_sage_sql_daily_sync_loop() -> None:
         try:
             config = get_sage_sql_daily_sync_config(db)
             if not config.enabled:
-                logger.info("[SAGE SQL SCHEDULER] Synchronisation automatique désactivée, attente de 60 secondes.")
+                logger.debug("[SAGE SQL SCHEDULER] Synchronisation automatique désactivée, attente de 60 secondes.")
                 await asyncio.sleep(60)
                 continue
 
             next_run = calculate_next_run_time(config.run_time)
             delay = (next_run - datetime.now()).total_seconds()
-            logger.info("[SAGE SQL SCHEDULER] Prochaine synchronisation prévue à %s (dans %.0f secondes).", next_run.isoformat(), delay)
+            logger.info(
+                "[SAGE SQL SCHEDULER] Prochaine synchronisation prévue à %s (dans %.0f secondes). "
+                "Temps de sync configuré: %s",
+                next_run.isoformat(),
+                delay,
+                config.run_time
+            )
         finally:
             db.close()
 
@@ -93,17 +99,35 @@ async def run_sage_sql_daily_sync_loop() -> None:
         try:
             config = get_sage_sql_daily_sync_config(db)
             if not config.enabled:
+                logger.info("[SAGE SQL SCHEDULER] Synchronisation désactivée juste avant execution.")
                 continue
         finally:
             db.close()
 
         db = SessionLocal()
         try:
-            logger.info("[SAGE SQL SCHEDULER] Exécution de la synchronisation des programmes Sage X3.")
+            logger.info("[SAGE SQL SCHEDULER] ========== DÉBUT SYNCHRONISATION ==========")
+            logger.info("[SAGE SQL SCHEDULER] Heure de sync: %s | Heure actuelle: %s",
+                       config.run_time, datetime.now().strftime("%H:%M:%S"))
             result = sync_sage_programs_from_sql(db)
-            logger.info("[SAGE SQL SCHEDULER] Synchronisation terminée: %s", result)
+
+            logger.info("[SAGE SQL SCHEDULER] ========== SYNC TERMINÉE ==========")
+            logger.info("[SAGE SQL SCHEDULER] Résultats: Synced=%d, Created=%d, Updated=%d, Errors=%d",
+                       result.get("synced", 0),
+                       result.get("created", 0),
+                       result.get("updated", 0),
+                       len(result.get("errors", [])))
+
+            if result.get("errors"):
+                logger.warning("[SAGE SQL SCHEDULER] Erreurs détectées:")
+                for err in result.get("errors", []):
+                    logger.warning("  - Programme %s: %s",
+                                 err.get("program_code"),
+                                 err.get("error"))
         except Exception as exc:
-            logger.exception("[SAGE SQL SCHEDULER] Erreur lors de la synchronisation: %s", exc)
+            logger.error("[SAGE SQL SCHEDULER] ========== ERREUR CRITIQUE ==========")
+            logger.exception("[SAGE SQL SCHEDULER] Exception lors de la synchronisation: %s", exc)
+            logger.error("[SAGE SQL SCHEDULER] Type: %s | Message: %s", type(exc).__name__, str(exc))
         finally:
             db.close()
 
