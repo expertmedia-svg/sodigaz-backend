@@ -32,6 +32,7 @@ from app.schemas import (
 )
 import logging
 
+from app.config import settings
 from app.services.pricing_service import calculate_delivery_amount, resolve_active_pricing_rule
 from app.services.sage_sql_service import lire_programmes_du_jour, lire_tous_programmes_sage
 from app.services.sage_x3_service import SageX3Service
