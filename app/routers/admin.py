@@ -2165,15 +2165,21 @@ def seed_sage_program(
             ),
         ))
 
+    # ✅ Générer les codes Sage automatiquement pour le mapping
+    sage_driver_code = f"{driver.id:06d}"  # Ex: "000003" pour Driver #3
+    sage_truck_code = truck.license_plate or f"TRUCK-{truck.id:03d}"  # Ex: "CA092"
+
     payload = SageProgramInbound(
         program_code=program_code,
         program_type=normalized_program_type,
-        site="SOD-BF-DEMO",
+        site=depot.site_code,  # ✅ Use actual depot's site code
         date=date.today(),
         time="08:30",
         depot_id=body.depot_id,
         truck_id=body.truck_id,
         driver_id=body.driver_id,
+        sage_driver_code=sage_driver_code,  # ← YLIV (Livraison)
+        truck_code=sage_truck_code,         # ← YMATCAM
         transporter="SODIGAZ DEMO",
         status="active",
         source_updated_at=utc_now(),
