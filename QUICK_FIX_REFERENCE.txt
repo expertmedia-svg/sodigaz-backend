@@ -1,0 +1,129 @@
+================================================================================
+YLIV/YMATCAM FIX - QUICK REFERENCE
+================================================================================
+
+ISSUE: Programs showing YLIV: - | YMATCAM: - instead of driver/truck codes
+
+CAUSE: Production backend hasn't deployed latest code with the fix
+
+FIX STATUS: COMPLETE IN CODE ✓ | AWAITING DEPLOYMENT
+
+================================================================================
+DEPLOYMENT (5 minutes)
+================================================================================
+
+SSH: ssh debian@35.203.21.23
+
+cd ~/sodigaz-backend
+git pull
+pm2 restart sodigaz-backend
+
+Monitor: pm2 logs sodigaz-backend --lines 30
+
+Expected: Backend restarts and logs show it's processing requests
+
+================================================================================
+VERIFICATION (10 minutes after deployment)
+================================================================================
+
+1. CREATE NEW TEST PROGRAM IN SAGE:
+   - YLIV: 1062108 (test driver code)
+   - YMATCAM: CA155 (test truck code)
+   - Any client and product
+
+2. TRIGGER SYNC:
+   curl -X POST https://sodigazback.yingr-ai.com/api/sage/sync-today \
+     -H "Authorization: Bearer $TOKEN"
+
+3. CHECK ADMIN DASHBOARD:
+   - Go to "Programmes" page
+   - Find new program
+   - Verify: YLIV shows "1062108" (not "-")
+   - Verify: YMATCAM shows "CA155" (not "-")
+
+4. IF GOOD:
+   - Test driver 1062108 completes mission
+   - Check stats update
+   - Verify Sage receives validation
+   ✓ DEPLOYMENT SUCCESSFUL
+
+5. IF STILL SHOWING "-":
+   - Verify pm2 restart: pm2 status
+   - Check git pull worked: git log -1
+   - Monitor logs: pm2 logs sodigaz-backend --grep ERROR
+
+================================================================================
+CODE CHANGES DEPLOYED
+================================================================================
+
+✓ app/models.py:181-182
+  Added: yliv, ymatcam columns in Program table
+
+✓ app/routers/driver.py:770
+  Fixed: RoleEnum.RAVITAILLEUR comparison (was string "ravitailleur")
+
+✓ app/routers/integration.py:494-495
+  Store: program.yliv and program.ymatcam from payload
+
+✓ app/services/sage_sql_service.py:143-144
+  Fetch: YLIV_0 and YMATCAM_0 from Sage database
+
+✓ Complete data flow chain verified
+
+================================================================================
+EXPECTED RESULTS
+================================================================================
+
+BEFORE DEPLOYMENT:
+  New programs still show: YLIV: - | YMATCAM: -
+  Driver assignment fails
+  Workflow broken
+
+AFTER DEPLOYMENT:
+  New programs show: YLIV: [code] | YMATCAM: [code]
+  Driver assignment works
+  Workflow complete
+  Sage X3 receives updates
+
+================================================================================
+ROLLBACK (if needed)
+================================================================================
+
+cd ~/sodigaz-backend
+git reset --hard HEAD~1
+pm2 restart sodigaz-backend
+
+Takes 2 minutes. Reverts to previous working version.
+
+================================================================================
+DIAGNOSTIC TOOLS
+================================================================================
+
+Check program codes in database:
+  python diagnostic_yliv_ymatcam.py /path/to/database.db
+
+Check Sage SQL health:
+  curl http://localhost:8000/api/admin/integration/sage-sql-health
+
+View recent programs:
+  sqlite3 database.db "SELECT program_code, yliv, ymatcam FROM programs LIMIT 5;"
+
+================================================================================
+FILES FOR REFERENCE
+================================================================================
+
+- VERIFICATION_REPORT.md: Technical details of code verification
+- DEPLOYMENT_GUIDE.md: Complete step-by-step procedures
+- STATUS_SUMMARY.md: Executive summary of issue and resolution
+- diagnostic_yliv_ymatcam.py: Database diagnostic tool
+
+================================================================================
+SUPPORT CONTACTS
+================================================================================
+
+Production Server: debian@35.203.21.23
+Backend Logs: pm2 logs sodigaz-backend
+Sage SQL Server: 35.203.21.23:50389
+Database: x3v12.SODIGAZG.YPRGCOLL
+
+================================================================================
