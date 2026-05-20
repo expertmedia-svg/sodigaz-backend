@@ -33,7 +33,7 @@ from app.schemas import (
 import logging
 
 from app.services.pricing_service import calculate_delivery_amount, resolve_active_pricing_rule
-from app.services.sage_sql_service import lire_programmes_du_jour
+from app.services.sage_sql_service import lire_programmes_du_jour, lire_tous_programmes_sage
 from app.services.sage_x3_service import SageX3Service
 from app.time_utils import utc_now, utc_now_iso
 
@@ -731,6 +731,63 @@ def get_program(
     if program is None:
         raise HTTPException(status_code=404, detail="Programme introuvable")
     return program
+
+
+@router.get("/sage/diagnostic")
+def sage_sync_diagnostic(
+    db: Session = Depends(get_db),
+    current_user=Depends(require_role(RoleEnum.ADMIN)),
+):
+    """Diagnostic endpoint to debug why programs aren't being synced."""
+    try:
+        # Get all programs from Sage SQL
+        sage_programs = lire_tous_programmes_sage()
+
+        # Get all depots from database with their site codes
+        depots = db.query(Depot).all()
+        depot_map = {d.site_code.upper(): d for d in depots if d.site_code}
+
+        # Get all programs from database
+        db_programs = db.query(Program).all()
+        db_program_codes = {p.program_code for p in db_programs}
+
+        # Check which Sage programs match depot site codes
+        unmapped_sites = set()
+        mapped_count = 0
+        for prog in sage_programs:
+            site = prog["site"].upper() if prog["site"] else None
+            if site and site in depot_map:
+                mapped_count += 1
+            elif site:
+                unmapped_sites.add(site)
+
+        return {
+            "sage_programs_count": len(sage_programs),
+            "sage_programs": sage_programs[:20],  # First 20 for inspection
+            "depots_in_db": [
+                {
+                    "id": d.id,
+                    "name": d.name,
+                    "site_code": d.site_code,
+                }
+                for d in depots
+            ],
+            "depot_site_code_map": list(depot_map.keys()),
+            "unmapped_sage_sites": list(unmapped_sites),
+            "sage_programs_already_synced": list(db_program_codes),
+            "sync_status": {
+                "total_sage_programs": len(sage_programs),
+                "depot_sites_mapped": mapped_count,
+                "depot_sites_unmapped": len(unmapped_sites),
+                "programs_in_db": len(db_programs),
+            }
+        }
+    except Exception as exc:
+        logger.exception("Error in sage sync diagnostic")
+        return {
+            "error": str(exc),
+            "message": "Failed to retrieve diagnostic information",
+        }
 
 
 @router.get("/pricing-rules", response_model=list[PricingRuleResponse])

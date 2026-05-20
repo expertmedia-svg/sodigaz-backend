@@ -46,7 +46,6 @@ def lire_programmes_du_jour() -> list[dict[str, Any]]:
     conn = get_sage_sql_connection()
     try:
         cursor = conn.cursor()
-        db = settings.SAGE_SQL_DATABASE
         schema = settings.SAGE_SQL_SCHEMA
 
         cursor.execute(
@@ -63,7 +62,7 @@ def lire_programmes_du_jour() -> list[dict[str, Any]]:
                 p.YFLGVAL2_0,
                 p.YTACHERON1_0,
                 p.YTACHERON2_0
-            FROM {db}.{schema}.YPRGCOLL p
+            FROM [{schema}].[YPRGCOLL] p
             WHERE p.YFLGVAL2_0 = 1
             AND CAST(p.YDATE_0 AS DATE) = CAST(GETDATE() AS DATE)
             ORDER BY p.YTIME_0
@@ -143,11 +142,10 @@ def valider_programme_sage(num_programme: str) -> str:
     conn = get_sage_sql_connection()
     try:
         cursor = conn.cursor()
-        db = settings.SAGE_SQL_DATABASE
         schema = settings.SAGE_SQL_SCHEMA
 
         cursor.execute(
-            f"SELECT YPROGCOLL_0, YFLGVAL2_0 FROM {db}.{schema}.YPRGCOLL WHERE YPROGCOLL_0 = ?",
+            f"SELECT YPROGCOLL_0, YFLGVAL2_0 FROM [{schema}].[YPRGCOLL] WHERE YPROGCOLL_0 = ?",
             num_programme.strip(),
         )
         row = cursor.fetchone()
@@ -159,7 +157,7 @@ def valider_programme_sage(num_programme: str) -> str:
             return "ALREADY_VALIDATED"
 
         cursor.execute(
-            f"UPDATE {db}.{schema}.YPRGCOLL SET YFLGVAL2_0 = 2 WHERE YPROGCOLL_0 = ?",
+            f"UPDATE [{schema}].[YPRGCOLL] SET YFLGVAL2_0 = 2 WHERE YPROGCOLL_0 = ?",
             num_programme.strip(),
         )
         conn.commit()
@@ -168,6 +166,57 @@ def valider_programme_sage(num_programme: str) -> str:
     except Exception as exc:
         logger.error(f"[SAGE SQL] Erreur validation du programme {num_programme}: {exc}")
         return "ERROR"
+    finally:
+        conn.close()
+
+
+def lire_tous_programmes_sage() -> list[dict[str, Any]]:
+    """Lit TOUS les programmes de Sage X3 sans filtre (pour diagnostic)."""
+    conn = get_sage_sql_connection()
+    try:
+        cursor = conn.cursor()
+        db = settings.SAGE_SQL_DATABASE
+        schema = settings.SAGE_SQL_SCHEMA
+
+        cursor.execute(
+            f"""
+            SELECT
+                p.YPROGCOLL_0,
+                p.YFCY_0,
+                p.YLIV_0,
+                p.YMATCAM_0,
+                p.YDATE_0,
+                p.YTIME_0,
+                p.YGFLAG_0,
+                p.YFLGVAL_0,
+                p.YFLGVAL2_0,
+                COUNT(d.YLIGNE_0) as line_count
+            FROM [{schema}].[YPRGCOLL] p
+            LEFT JOIN [{schema}].[YPRGCOLLD] d ON d.YPROGCOLL_0 = p.YPROGCOLL_0
+            GROUP BY p.YPROGCOLL_0, p.YFCY_0, p.YLIV_0, p.YMATCAM_0, p.YDATE_0, p.YTIME_0, p.YGFLAG_0, p.YFLGVAL_0, p.YFLGVAL2_0
+            ORDER BY p.YDATE_0 DESC, p.YPROGCOLL_0 DESC
+            """
+        )
+
+        programmes = []
+        for row in cursor.fetchall():
+            date_value = row[4]
+            if isinstance(date_value, datetime):
+                date_value = date_value.date()
+
+            programmes.append({
+                "program_code": (row[0] or "").strip(),
+                "site": (row[1] or "").strip(),
+                "sage_driver_code": (row[2] or "").strip(),
+                "truck_code": (row[3] or "").strip(),
+                "date": str(date_value) if date_value else None,
+                "time": (row[5] or "").strip(),
+                "yflgval": row[7],
+                "yflgval2": row[8],
+                "line_count": row[9],
+            })
+
+        return programmes
     finally:
         conn.close()
 
