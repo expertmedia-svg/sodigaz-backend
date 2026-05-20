@@ -55,4 +55,9 @@ class Settings:
     SAGE_SQL_DAILY_SYNC_TIME = os.getenv("SAGE_SQL_DAILY_SYNC_TIME", "06:00")
     SAGE_SQL_DAILY_SYNC_ENABLED = os.getenv("SAGE_SQL_DAILY_SYNC_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 
+    # Bottle pricing (in FCFA)
+    PRICE_6KG = int(os.getenv("PRICE_6KG", "1676"))
+    PRICE_12KG = int(os.getenv("PRICE_12KG", "4825"))
+    PRICE_2_75KG = int(os.getenv("PRICE_2_75KG", "767"))
+
 settings = Settings()

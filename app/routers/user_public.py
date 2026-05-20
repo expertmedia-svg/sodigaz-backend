@@ -415,5 +415,23 @@ def check_and_notify_deliveries(db: Session):
                 if notify:
                     # Dans une vraie application, envoyer SMS/Push notification
                     print(f"🔔 Notification à {sub.phone}: Dépôt {depot.name} livré ({distance:.1f}km)")
-    
+
     return {"message": "Notifications vérifiées"}
+
+
+# Configuration publique (prix, etc.)
+class PricingResponse(BaseModel):
+    price_6kg: int
+    price_12kg: int
+    price_2_75kg: int
+
+
+@router.get("/config/pricing", response_model=PricingResponse, tags=["config"])
+def get_pricing_config():
+    """Get current bottle pricing configuration (FCFA)"""
+    from app.config import settings
+    return {
+        "price_6kg": settings.PRICE_6KG,
+        "price_12kg": settings.PRICE_12KG,
+        "price_2_75kg": settings.PRICE_2_75KG,
+    }
