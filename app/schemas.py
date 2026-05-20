@@ -123,10 +123,10 @@ class TruckResponse(OrmModel):
     driver_id: int
     capacity_6kg: int
     capacity_12kg: int
-    current_load_6kg_plein: int
-    current_load_12kg_plein: int
-    current_load_6kg_vide: int
-    current_load_12kg_vide: int
+    current_load_6kg_plein: int = 0
+    current_load_12kg_plein: int = 0
+    current_load_6kg_vide: int = 0
+    current_load_12kg_vide: int = 0
     is_active: bool
 
 
