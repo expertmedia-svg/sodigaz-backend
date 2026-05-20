@@ -83,7 +83,8 @@ def create_depot(depot_data: DepotCreate, db: Session = Depends(get_db), current
         plv_code=depot_data.plv_code,
         maps_url=depot_data.maps_url,
         phone=depot_data.phone,
-        manager_id=depot_data.manager_id
+        manager_id=depot_data.manager_id,
+        site_code=depot_data.site_code
     )
     db.add(new_depot)
     db.commit()
@@ -119,7 +120,9 @@ def update_depot(depot_id: int, depot_data: DepotUpdate, db: Session = Depends(g
         depot.maps_url = depot_data.maps_url
     if depot_data.phone:
         depot.phone = depot_data.phone
-    
+    if depot_data.site_code is not None:
+        depot.site_code = depot_data.site_code
+
     db.commit()
     db.refresh(depot)
     return DepotResponse.from_orm(depot)

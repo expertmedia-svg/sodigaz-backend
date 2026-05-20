@@ -74,6 +74,7 @@ class DepotCreate(BaseModel):
     maps_url: Optional[str] = None
     phone: str
     manager_id: Optional[int] = None
+    site_code: Optional[str] = None
 
 class DepotUpdate(BaseModel):
     name: Optional[str] = None
@@ -87,6 +88,7 @@ class DepotUpdate(BaseModel):
     plv_code: Optional[str] = None
     maps_url: Optional[str] = None
     phone: Optional[str] = None
+    site_code: Optional[str] = None
 
 class DepotResponse(OrmModel):
     id: int
@@ -105,6 +107,7 @@ class DepotResponse(OrmModel):
     plv_code: Optional[str]
     maps_url: Optional[str]
     phone: str
+    site_code: Optional[str]
     is_active: bool
     
 # TRUCK
