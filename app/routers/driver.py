@@ -767,7 +767,7 @@ def login_driver(credentials: LoginRequest, db: Session = Depends(get_db)):
             detail="Identifiant ou mot de passe incorrect",
         )
     
-    if user.role.value != "ravitailleur":
+    if user.role != RoleEnum.RAVITAILLEUR:
         raise HTTPException(status_code=403, detail="Accès réservé aux ravitailleurs")
     
     if not user.is_active:
