@@ -746,6 +746,25 @@ def get_program(
     return program
 
 
+@router.get("/sage/test-connection")
+def test_sage_connection():
+    """Test la connexion Sage SQL (public - pour diagnostiquer)."""
+    try:
+        from app.services.sage_sql_service import get_sage_sql_connection
+        conn = get_sage_sql_connection()
+        conn.close()
+        return {
+            "status": "ok",
+            "message": "Sage SQL connection successful"
+        }
+    except Exception as e:
+        logger.error(f"[SAGE SQL TEST] Connection failed: {e}")
+        return {
+            "status": "error",
+            "error": str(e)
+        }
+
+
 @router.get("/sage/diagnostic")
 def sage_sync_diagnostic(
     db: Session = Depends(get_db),
