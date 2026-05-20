@@ -242,6 +242,113 @@ def lire_tous_programmes_sage() -> list[dict[str, Any]]:
         conn.close()
 
 
+def ecrire_programme_valide_sage(
+    num_programme: str,
+    livraisons: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Écrit les livraisons validées dans Sage X3 pour un programme.
+
+    Pour chaque livraison:
+    - UPDATE la ligne existante avec quantité 6kg
+    - INSERT nouvelle ligne pour 12kg si qty > 0
+    Marque ensuite le programme validé (YFLGVAL2_0=2).
+
+    Args:
+        num_programme: Code du programme Sage
+        livraisons: Array de {client_code, quantite_6kg, quantite_12kg, montant_total}
+
+    Returns:
+        {status: OK/ERROR, detail: message, updated_lines: count, inserted_lines: count}
+    """
+    conn = get_sage_sql_connection()
+    try:
+        cursor = conn.cursor()
+        schema = settings.SAGE_SQL_SCHEMA
+        database = settings.SAGE_SQL_DATABASE
+
+        logger.info(f"[SAGE SQL] Début écriture programme validé {num_programme}, {len(livraisons)} livraisons")
+
+        updated_count = 0
+        inserted_count = 0
+
+        # Récupère le numéro de ligne max pour INSERTs
+        cursor.execute(f"USE {database}")
+        cursor.execute(
+            f"SELECT MAX(YLIGNE_0) FROM {schema}.YPRGCOLLD WHERE YPROGCOLL_0 = %s",
+            (num_programme.strip(),)
+        )
+        max_line = cursor.fetchone()[0]
+        next_line = (max_line or 0) + 1
+
+        # Traite chaque livraison
+        for livraison in livraisons:
+            client_code = (livraison.get("client_code") or "").strip()
+            qty_6kg = int(livraison.get("quantite_6kg") or 0)
+            qty_12kg = int(livraison.get("quantite_12kg") or 0)
+
+            if not client_code:
+                continue
+
+            # UPDATE la ligne 6kg existante
+            if qty_6kg > 0:
+                cursor.execute(f"USE {database}")
+                cursor.execute(
+                    f"""
+                    UPDATE {schema}.YPRGCOLLD
+                    SET YQTY_0 = %s
+                    WHERE YPROGCOLL_0 = %s
+                    AND YBPC_0 = %s
+                    AND YITMREF_0 = '6kg'
+                    """,
+                    (qty_6kg, num_programme.strip(), client_code)
+                )
+                updated_count += cursor.rowcount
+                logger.info(f"[SAGE SQL] UPDATE {client_code} 6kg: {cursor.rowcount} lignes")
+
+            # INSERT nouvelle ligne pour 12kg si qty > 0
+            if qty_12kg > 0:
+                cursor.execute(f"USE {database}")
+                cursor.execute(
+                    f"""
+                    INSERT INTO {schema}.YPRGCOLLD
+                    (YPROGCOLL_0, YLIGNE_0, YBPC_0, YQTY_0, YITMREF_0)
+                    VALUES (%s, %s, %s, %s, '12kg')
+                    """,
+                    (num_programme.strip(), next_line, client_code, qty_12kg)
+                )
+                inserted_count += 1
+                next_line += 1
+                logger.info(f"[SAGE SQL] INSERT {client_code} 12kg: 1 ligne")
+
+        # Marque le programme comme validé
+        cursor.execute(f"USE {database}")
+        cursor.execute(
+            f"UPDATE {schema}.YPRGCOLL SET YFLGVAL2_0 = 2 WHERE YPROGCOLL_0 = %s",
+            (num_programme.strip(),)
+        )
+
+        conn.commit()
+        logger.info(f"[SAGE SQL] Programme {num_programme} validé — {updated_count} UPDATE, {inserted_count} INSERT")
+
+        return {
+            "status": "OK",
+            "detail": f"Programme {num_programme} écrit dans Sage: {updated_count} lignes mises à jour, {inserted_count} lignes insérées",
+            "updated_lines": updated_count,
+            "inserted_lines": inserted_count,
+        }
+    except Exception as exc:
+        logger.error(f"[SAGE SQL] Erreur écriture programme {num_programme}: {exc}")
+        conn.rollback()
+        return {
+            "status": "ERROR",
+            "detail": str(exc),
+            "updated_lines": 0,
+            "inserted_lines": 0,
+        }
+    finally:
+        conn.close()
+
+
 def check_sage_sql_connection() -> dict:
     """Teste la connexion SQL vers Sage X3."""
     try:

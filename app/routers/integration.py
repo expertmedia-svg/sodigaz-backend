@@ -28,13 +28,15 @@ from app.schemas import (
     ProgramResponse,
     SageProgramInbound,
     SageRawProgramInbound,
+    ValidatedProgramWriteback,
+    ValidatedProgramResponse,
     normalize_sage_raw_to_inbound,
 )
 import logging
 
 from app.config import settings
 from app.services.pricing_service import calculate_delivery_amount, resolve_active_pricing_rule
-from app.services.sage_sql_service import lire_programmes_du_jour, lire_tous_programmes_sage
+from app.services.sage_sql_service import lire_programmes_du_jour, lire_tous_programmes_sage, ecrire_programme_valide_sage
 from app.services.sage_x3_service import SageX3Service
 from app.time_utils import utc_now, utc_now_iso
 
@@ -508,74 +510,129 @@ def _process_sage_program(payload: SageProgramInbound, db: Session):
 
     synced_deliveries = 0
     processed_line_keys: set[str] = set()
+
+    # Group lines by (client_code, plv/destination) to create 1 delivery per delivery location
+    lines_by_location = {}
     for inbound_line in payload.lines:
-        line_code = _resolved_line_code(inbound_line)
-        processed_line_keys.add(_line_identity(inbound_line.external_line_id, line_code))
-        program_line = _find_existing_program_line(program, inbound_line)
-        if program_line is None:
-            program_line = ProgramLine(program_id=program.id, line_code=line_code)
-            db.add(program_line)
+        location_key = (inbound_line.client_code, inbound_line.destination_address or inbound_line.plv or "")
+        if location_key not in lines_by_location:
+            lines_by_location[location_key] = []
+        lines_by_location[location_key].append(inbound_line)
 
-        delivered_quantity = inbound_line.quantity_delivered or program_line.quantity_delivered or 0
-        collected_quantity = inbound_line.quantity_collected or program_line.quantity_collected or 0
-        pricing_rule = None
-        if program_type == ProgramTypeEnum.DELIVERY:
-            preview_quantity = delivered_quantity if delivered_quantity > 0 else inbound_line.quantity_planned
-            pricing_rule = resolve_active_pricing_rule(
-                db,
-                product_code=inbound_line.product_code,
-                depot_id=payload.depot_id,
+    # Process each location's lines as a single delivery
+    for location_key, client_lines in lines_by_location.items():
+        # Accumulate quantities by product type
+        total_qty_6kg = 0
+        total_qty_12kg = 0
+        first_line = client_lines[0]
+
+        for inbound_line in client_lines:
+            qty_6kg, qty_12kg = _delivery_quantities(
+                inbound_line.product_code,
+                inbound_line.quantity_planned,
             )
-            unit_price = inbound_line.unit_price
-            tax_rate = inbound_line.tax_rate
-            if pricing_rule is not None:
-                unit_price = pricing_rule.unit_price
-                tax_rate = pricing_rule.tax_rate
-            if unit_price is None:
-                unit_price = 0
-            if tax_rate is None:
-                tax_rate = 0
-            amounts = calculate_delivery_amount(
-                quantity_delivered=preview_quantity,
-                unit_price=unit_price,
-                tax_rate=tax_rate,
+            total_qty_6kg += qty_6kg
+            total_qty_12kg += qty_12kg
+
+            # Track processed lines
+            line_code = _resolved_line_code(inbound_line)
+            processed_line_keys.add(_line_identity(inbound_line.external_line_id, line_code))
+
+            # Create/update program_line records for each article
+            program_line = _find_existing_program_line(program, inbound_line)
+            if program_line is None:
+                program_line = ProgramLine(program_id=program.id, line_code=line_code)
+                db.add(program_line)
+
+            # Update program_line with inbound data
+            program_line.external_line_id = inbound_line.external_line_id
+            program_line.line_code = line_code
+            program_line.client_code = inbound_line.client_code
+            program_line.client_name = inbound_line.client_name
+            program_line.destination_address = inbound_line.destination_address
+            program_line.destination_latitude = inbound_line.destination_latitude
+            program_line.destination_longitude = inbound_line.destination_longitude
+            program_line.contact_name = inbound_line.contact_name
+            program_line.contact_phone = inbound_line.contact_phone
+            program_line.product_code = inbound_line.product_code
+            program_line.product_label = inbound_line.product_label
+            program_line.article = inbound_line.article
+            program_line.zone = inbound_line.zone
+            program_line.quantity_planned = inbound_line.quantity_planned
+            program_line.delivery_mode = inbound_line.delivery_mode
+            program_line.collection_sheet = inbound_line.collection_sheet
+            program_line.comment = inbound_line.comment
+            db.flush()
+
+        # Skip if total quantity is 0 (no delivery needed)
+        if total_qty_6kg == 0 and total_qty_12kg == 0:
+            continue
+
+        # Create 1 delivery with combined quantities for this location
+        pricing_rule = resolve_active_pricing_rule(
+            db,
+            product_code=first_line.product_code,
+            depot_id=payload.depot_id,
+        ) if program_type == ProgramTypeEnum.DELIVERY else None
+
+        unit_price = pricing_rule.unit_price if pricing_rule else (first_line.unit_price or 0)
+        tax_rate = pricing_rule.tax_rate if pricing_rule else (first_line.tax_rate or 0)
+
+        amounts = calculate_delivery_amount(
+            quantity_delivered=total_qty_6kg + total_qty_12kg,
+            unit_price=unit_price,
+            tax_rate=tax_rate,
+        ) if program_type == ProgramTypeEnum.DELIVERY else _empty_amounts()
+
+        # Create single delivery with combined quantities (by client + location)
+        location_key_str = f"{location_key[0]}:{location_key[1]}"
+        delivery = db.query(Delivery).filter(
+            Delivery.program_id == program.id,
+            Delivery.external_delivery_id == location_key_str
+        ).first()
+
+        if delivery is None:
+            delivery = Delivery(
+                truck_id=program.truck_id,
+                depot_id=program.depot_id,
+                destination_name=first_line.client_name,
+                destination_address=first_line.destination_address,
+                destination_latitude=first_line.destination_latitude,
+                destination_longitude=first_line.destination_longitude,
+                contact_name=first_line.contact_name,
+                contact_phone=first_line.contact_phone,
+                driver_id=program.driver_id,
+                quantity_6kg=total_qty_6kg,
+                quantity_12kg=total_qty_12kg,
+                quantity=total_qty_6kg + total_qty_12kg,
+                status=DeliveryStatusEnum.PENDING,
+                source_type="sage_inbound",
+                external_status=SageMissionStatusEnum.PENDING_APPROVAL,
+                external_delivery_id=location_key_str,
+                scheduled_date=program.program_date,
+                notes=f"Programme Sage X3 {program.program_code}",
+                program_type=program.program_type.value,
+                program_id=program.id,
+                pricing_rule_id=pricing_rule.id if pricing_rule else None,
+                unit_price_applied=unit_price,
+                tax_rate_applied=tax_rate,
+                subtotal_amount=amounts["subtotal_amount"],
+                tax_amount=amounts["tax_amount"],
+                total_amount=amounts["total_amount"],
             )
+            db.add(delivery)
+            db.flush()
         else:
-            amounts = _empty_amounts()
+            # Update existing delivery with new quantities
+            delivery.quantity_6kg = total_qty_6kg
+            delivery.quantity_12kg = total_qty_12kg
+            delivery.quantity = total_qty_6kg + total_qty_12kg
+            delivery.unit_price_applied = unit_price
+            delivery.tax_rate_applied = tax_rate
+            delivery.subtotal_amount = amounts["subtotal_amount"]
+            delivery.tax_amount = amounts["tax_amount"]
+            delivery.total_amount = amounts["total_amount"]
 
-        program_line.external_line_id = inbound_line.external_line_id
-        program_line.line_code = line_code
-        program_line.client_id = inbound_line.client_id or inbound_line.client_code
-        program_line.client_code = inbound_line.client_code
-        program_line.client_name = inbound_line.client_name
-        program_line.destination_address = inbound_line.destination_address
-        program_line.destination_latitude = inbound_line.destination_latitude
-        program_line.destination_longitude = inbound_line.destination_longitude
-        program_line.contact_name = inbound_line.contact_name
-        program_line.contact_phone = inbound_line.contact_phone
-        program_line.product_code = inbound_line.product_code
-        program_line.product_label = inbound_line.product_label
-        program_line.article = inbound_line.article
-        program_line.zone = inbound_line.zone
-        program_line.quantity_planned = inbound_line.quantity_planned
-        program_line.quantity_delivered = delivered_quantity
-        program_line.quantity_collected = collected_quantity
-        program_line.pricing_rule_id = pricing_rule.id if pricing_rule else None
-        program_line.unit_price = amounts["unit_price"]
-        program_line.tax_rate = amounts["tax_rate"]
-        program_line.subtotal_amount = amounts["subtotal_amount"]
-        program_line.tax_amount = amounts["tax_amount"]
-        program_line.total_amount = amounts["total_amount"]
-        program_line.delivery_mode = inbound_line.delivery_mode
-        program_line.collection_sheet = inbound_line.collection_sheet
-        program_line.comment = inbound_line.comment
-        if program_type == ProgramTypeEnum.COLLECTION:
-            program_line.status = "collected" if collected_quantity >= inbound_line.quantity_planned and inbound_line.quantity_planned > 0 else ("partial" if collected_quantity > 0 else "pending")
-        else:
-            program_line.status = "delivered" if delivered_quantity >= inbound_line.quantity_planned and inbound_line.quantity_planned > 0 else ("partial" if delivered_quantity > 0 else "pending")
-        db.flush()
-
-        _upsert_delivery_from_program_line(db, program, program_line)
         synced_deliveries += 1
 
     for existing_line in program.lines:
@@ -717,6 +774,50 @@ def sync_sage_programs_today(
     current_user=Depends(require_role(RoleEnum.ADMIN)),
 ):
     return sync_sage_programs_from_sql(db)
+
+
+@router.post("/sage/validate-program", response_model=ValidatedProgramResponse)
+def validate_program_to_sage(
+    payload: ValidatedProgramWriteback,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_role(RoleEnum.DRIVER, RoleEnum.ADMIN)),
+):
+    """Écrit un programme validé dans Sage X3 et met à jour le statut.
+
+    Attendus:
+    - program_code: Code du programme Sage
+    - livraisons: Array de {client_code, quantite_6kg, quantite_12kg, montant_total}
+
+    Réalise pour chaque livraison:
+    - UPDATE la ligne existante 6kg
+    - INSERT nouvelle ligne 12kg si qty > 0
+    - UPDATE YPRGCOLL SET YFLGVAL2_0 = 2 (marque comme validé)
+    """
+    try:
+        program = db.query(Program).filter(Program.program_code == payload.program_code).first()
+        if not program:
+            raise HTTPException(status_code=404, detail=f"Programme {payload.program_code} non trouvé")
+
+        # Appelle le service Sage SQL
+        livraisons = [item.model_dump() for item in payload.livraisons]
+        result = ecrire_programme_valide_sage(payload.program_code, livraisons)
+
+        if result["status"] == "ERROR":
+            raise HTTPException(status_code=500, detail=result["detail"])
+
+        # Marque le programme comme validé dans la DB locale
+        program.status = "completed"
+        program.updated_at = utc_now()
+        db.commit()
+
+        logger.info(f"[INTEGRATION] Programme {payload.program_code} validé et écrit dans Sage")
+
+        return ValidatedProgramResponse(**result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[INTEGRATION] Erreur validation programme {payload.program_code}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/programs", response_model=list[ProgramResponse])

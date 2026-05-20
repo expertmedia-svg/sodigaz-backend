@@ -544,5 +544,22 @@ class DriverProgramResponse(BaseModel):
     transporter_name: Optional[str] = None
     status: str
     lines: list[DriverProgramLineResponse] = Field(default_factory=list)
-    
 
+
+class ValidatedDeliveryItem(BaseModel):
+    client_code: str
+    quantite_6kg: int = 0
+    quantite_12kg: int = 0
+    montant_total: Optional[Decimal] = None
+
+
+class ValidatedProgramWriteback(BaseModel):
+    program_code: str
+    livraisons: list[ValidatedDeliveryItem]
+
+
+class ValidatedProgramResponse(BaseModel):
+    status: str
+    detail: str
+    updated_lines: int = 0
+    inserted_lines: int = 0
