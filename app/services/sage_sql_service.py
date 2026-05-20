@@ -49,6 +49,8 @@ def lire_programmes_du_jour() -> list[dict[str, Any]]:
         cursor = conn.cursor()
         schema = settings.SAGE_SQL_SCHEMA
 
+        logger.info(f"[SAGE SQL] Querying with schema: {schema}")
+
         cursor.execute(
             f"""
             SELECT
@@ -71,7 +73,9 @@ def lire_programmes_du_jour() -> list[dict[str, Any]]:
         )
 
         programmes = []
-        for row in cursor.fetchall():
+        rows = cursor.fetchall()
+        logger.info(f"[SAGE SQL] Query returned {len(rows)} rows")
+        for row in rows:
             program_code = (row[0] or "").strip()
             date_value = row[4]
             if isinstance(date_value, datetime):

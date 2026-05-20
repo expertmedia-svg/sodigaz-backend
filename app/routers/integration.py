@@ -670,12 +670,25 @@ def _build_sage_program_payload_from_sql(program: dict, db: Session) -> SageProg
 
 
 def sync_sage_programs_from_sql(db: Session) -> dict:
-    programs = lire_programmes_du_jour()
+    try:
+        programs = lire_programmes_du_jour()
+    except Exception as e:
+        logger.error(f"[SAGE SQL SYNC] Erreur connexion Sage SQL: {e}")
+        return {
+            "synced": 0,
+            "created": 0,
+            "updated": 0,
+            "errors": [{"error": f"Sage SQL connection failed: {str(e)}"}],
+        }
+
     result = {
         "synced": 0,
         "created": 0,
         "updated": 0,
         "errors": [],
+        "debug_info": {
+            "programs_found": len(programs),
+        }
     }
 
     for program in programs:
