@@ -285,7 +285,7 @@ class Delivery(Base):
     # Tracking Sage X3 integration
     source_type = Column(String(50), default="user_created")  # user_created or sage_inbound
     external_delivery_id = Column(String(100), nullable=True, index=True)  # Sage X3 mission ID
-    external_status = Column(Enum(SageMissionStatusEnum), nullable=True)  # pending_approval, approved, rejected, synced
+    external_status = Column(Enum(SageMissionStatusEnum, native_enum=False), nullable=True)  # pending_approval, approved, rejected, synced
     external_sync_at = Column(DateTime, nullable=True)  # Last sync timestamp with Sage
     external_error = Column(Text, nullable=True)  # Error message from Sage sync
     
