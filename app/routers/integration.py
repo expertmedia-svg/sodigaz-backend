@@ -752,13 +752,47 @@ def test_sage_connection():
     try:
         from app.services.sage_sql_service import get_sage_sql_connection
         conn = get_sage_sql_connection()
+        cursor = conn.cursor()
+        database = settings.SAGE_SQL_DATABASE
+        schema = settings.SAGE_SQL_SCHEMA
+
+        # Test 1: Count ALL programs
+        cursor.execute(f"USE {database}")
+        cursor.execute(f"SELECT COUNT(*) FROM {schema}.YPRGCOLL")
+        all_count = cursor.fetchone()[0]
+
+        # Test 2: Count programs with YFLGVAL2_0=1
+        cursor.execute(f"SELECT COUNT(*) FROM {schema}.YPRGCOLL WHERE YFLGVAL2_0=1")
+        yflgval2_1_count = cursor.fetchone()[0]
+
+        # Test 3: Count programs with correct date
+        cursor.execute(f"""
+            SELECT COUNT(*) FROM {schema}.YPRGCOLL
+            WHERE CAST(YDATE_0 AS DATE) >= CAST(DATEADD(day, -1, GETDATE()) AS DATE)
+        """)
+        date_count = cursor.fetchone()[0]
+
+        # Test 4: Count programs with BOTH conditions
+        cursor.execute(f"""
+            SELECT COUNT(*) FROM {schema}.YPRGCOLL
+            WHERE YFLGVAL2_0=1
+            AND CAST(YDATE_0 AS DATE) >= CAST(DATEADD(day, -1, GETDATE()) AS DATE)
+        """)
+        final_count = cursor.fetchone()[0]
+
         conn.close()
+
         return {
             "status": "ok",
-            "message": "Sage SQL connection successful"
+            "database": database,
+            "schema": schema,
+            "programs_total": all_count,
+            "programs_yflgval2_1": yflgval2_1_count,
+            "programs_recent_date": date_count,
+            "programs_matching_filter": final_count
         }
     except Exception as e:
-        logger.error(f"[SAGE SQL TEST] Connection failed: {e}")
+        logger.error(f"[SAGE SQL TEST] Error: {e}")
         return {
             "status": "error",
             "error": str(e)
