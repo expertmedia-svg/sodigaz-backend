@@ -42,8 +42,8 @@ def get_sage_sql_connection():
 
 
 def lire_programmes_du_jour() -> list[dict[str, Any]]:
-    """Lit tous les programmes non confirmés des derniers jours depuis Sage X3.
-    Cherche les programmes avec YFLGVAL2_0=1 des 7 derniers jours (pour faciliter les tests)."""
+    """Lit tous les programmes non confirmés des 2 derniers jours depuis Sage X3.
+    Cherche les programmes avec YFLGVAL2_0=1 d'hier et d'aujourd'hui."""
     conn = get_sage_sql_connection()
     try:
         cursor = conn.cursor()
@@ -65,7 +65,7 @@ def lire_programmes_du_jour() -> list[dict[str, Any]]:
                 p.YTACHERON2_0
             FROM [{schema}].[YPRGCOLL] p
             WHERE p.YFLGVAL2_0 = 1
-            AND CAST(p.YDATE_0 AS DATE) >= CAST(DATEADD(day, -7, GETDATE()) AS DATE)
+            AND CAST(p.YDATE_0 AS DATE) >= CAST(DATEADD(day, -1, GETDATE()) AS DATE)
             ORDER BY p.YDATE_0 DESC, p.YTIME_0
             """
         )
