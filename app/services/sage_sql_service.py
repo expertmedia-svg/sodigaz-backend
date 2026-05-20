@@ -95,7 +95,7 @@ def lire_programmes_du_jour() -> list[dict[str, Any]]:
                     d.YNUMFICHE_0,
                     d.YDES_0,
                     d.YSMREMB_0
-                FROM {db}.{schema}.YPRGCOLLD d
+                FROM [{schema}].[YPRGCOLLD] d
                 WHERE d.YPROGCOLL_0 = ?
                 ORDER BY d.YLIGNE_0
                 """,
