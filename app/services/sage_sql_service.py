@@ -104,17 +104,29 @@ def lire_programmes_du_jour() -> list[dict[str, Any]]:
 
             lignes = []
             for l in cursor2.fetchall():
+                # Helper to safely convert to float
+                def safe_float(val, default=0):
+                    if val is None:
+                        return default
+                    val_str = str(val).strip()
+                    if not val_str:
+                        return default
+                    try:
+                        return float(val_str)
+                    except (ValueError, TypeError):
+                        return default
+
                 lignes.append({
                     "line": l[0],
                     "client_code": (l[1] or "").strip(),
                     "point_livr": (l[2] or "").strip(),
                     "zone": (l[3] or "").strip(),
                     "article": (l[4] or "").strip(),
-                    "quantite": float(l[5]) if l[5] is not None else 0,
+                    "quantite": safe_float(l[5]),
                     "mode_livr": (l[6] or "").strip(),
                     "num_fiche": (l[7] or "").strip(),
                     "designation": (l[8] or "").strip(),
-                    "remboursement": float(l[9]) if l[9] is not None else 0,
+                    "remboursement": safe_float(l[9]),
                 })
 
             programmes.append({
