@@ -1172,7 +1172,7 @@ def write_delivery_articles_to_sage(
         # Récupérer la première ligne existante du client pour ce programme
         cursor.execute(
             f"""
-            SELECT YLIGNE_0, YBPC_0, YPLV_0, YQUARTIER_0, MDL_0, YDATE_0
+            SELECT YLIGNE_0, YBPC_0, YPLV_0, YQUARTIER_0, MDL_0, YDATE_0, SOHNUM_0, SOPLIN_0
             FROM [{schema}].[YPRGCOLLD]
             WHERE YPROGCOLL_0 = %s AND YBPC_0 = %s
             ORDER BY YLIGNE_0
@@ -1191,6 +1191,8 @@ def write_delivery_articles_to_sage(
         client_zone = result[3]
         delivery_mode = result[4]
         delivery_date = result[5]
+        soh_num = result[6]  # Numéro commande Sage
+        sop_lin = result[7]  # Ligne commande Sage
 
         # Récupérer le max numéro de ligne pour les insertions futures
         cursor.execute(
@@ -1240,14 +1242,14 @@ def write_delivery_articles_to_sage(
                 f"""
                 INSERT INTO [{schema}].[YPRGCOLLD]
                 (YPROGCOLL_0, YLIGNE_0, YBPC_0, YPLV_0, YQUARTIER_0,
-                 YITMREF_0, YQTY_0, YSMREMB_0, YDES_0, MDL_0, YDATE_0,
+                 YITMREF_0, YQTY_0, YSMREMB_0, YDES_0, MDL_0, YDATE_0, SOHNUM_0, SOPLIN_0,
                  CREDATTIM_0, UPDDATTIM_0, CREUSR_0, UPDUSR_0, UPDTICK_0)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         GETDATE(), GETDATE(), 'SODIGAZ_APP', 'SODIGAZ_APP', 1)
                 """,
                 (payload.program_code, max_line, payload.client_code, client_plv, client_zone,
                  article.article_code, article.quantity, amount, article.comment,
-                 delivery_mode, delivery_date)
+                 delivery_mode, delivery_date, soh_num, sop_lin)
             )
             rows_affected = cursor.rowcount
             results.append({
