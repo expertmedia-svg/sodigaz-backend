@@ -120,7 +120,7 @@ class TruckCreate(BaseModel):
 class TruckResponse(OrmModel):
     id: int
     license_plate: str
-    driver_id: int
+    driver_id: Optional[int] = None
     capacity_6kg: int
     capacity_12kg: int
     current_load_6kg_plein: int = 0
