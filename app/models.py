@@ -178,6 +178,8 @@ class Program(Base):
     truck_id = Column(Integer, ForeignKey("trucks.id"), nullable=True, index=True)
     driver_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     transporter_name = Column(String(255), nullable=True)
+    yliv = Column(String(100), nullable=True, index=True)  # YLIV - Sage driver code
+    ymatcam = Column(String(100), nullable=True, index=True)  # YMATCAM - Sage truck code
     source_system = Column(String(50), default="sage_x3", nullable=False)
     source_updated_at = Column(DateTime, nullable=True)
     status = Column(String(30), default="active", nullable=False, index=True)

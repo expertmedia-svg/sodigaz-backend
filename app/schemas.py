@@ -501,6 +501,8 @@ class ProgramResponse(OrmModel):
     truck_id: Optional[int]
     driver_id: Optional[int]
     transporter_name: Optional[str]
+    yliv: Optional[str] = None  # YLIV - Sage driver code
+    ymatcam: Optional[str] = None  # YMATCAM - Sage truck code
     source_system: str
     source_updated_at: Optional[datetime]
     status: str

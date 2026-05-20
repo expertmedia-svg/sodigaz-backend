@@ -491,6 +491,8 @@ def _process_sage_program(payload: SageProgramInbound, db: Session):
     program.truck_id = resolved_truck.id if resolved_truck else None
     program.driver_id = resolved_driver.id if resolved_driver else None
     program.transporter_name = payload.transporter
+    program.yliv = sage_driver_code
+    program.ymatcam = truck_code
     program.status = resolved_status
     program.sync_version = payload.sync_version
     program.source_updated_at = payload.source_updated_at
@@ -564,11 +566,10 @@ def _process_sage_program(payload: SageProgramInbound, db: Session):
             program_line.comment = inbound_line.comment
             db.flush()
 
-        # Skip if total quantity is 0 (no delivery needed)
-        if total_qty_6kg == 0 and total_qty_12kg == 0:
-            continue
+        # Initialize quantities to 0 - driver will fill in actual quantities delivered
+        # (we cannot predict quantities in advance)
 
-        # Create 1 delivery with combined quantities for this location
+        # Create 1 delivery with ZERO quantities (driver will update on delivery completion)
         pricing_rule = resolve_active_pricing_rule(
             db,
             product_code=first_line.product_code,
@@ -578,13 +579,10 @@ def _process_sage_program(payload: SageProgramInbound, db: Session):
         unit_price = pricing_rule.unit_price if pricing_rule else (first_line.unit_price or 0)
         tax_rate = pricing_rule.tax_rate if pricing_rule else (first_line.tax_rate or 0)
 
-        amounts = calculate_delivery_amount(
-            quantity_delivered=total_qty_6kg + total_qty_12kg,
-            unit_price=unit_price,
-            tax_rate=tax_rate,
-        ) if program_type == ProgramTypeEnum.DELIVERY else _empty_amounts()
+        # Empty amounts initially - will be calculated when driver submits actual quantities
+        amounts = _empty_amounts()
 
-        # Create single delivery with combined quantities (by client + location)
+        # Create single delivery with ZERO quantities (by client + location)
         location_key_str = f"{location_key[0]}:{location_key[1]}"
         delivery = db.query(Delivery).filter(
             Delivery.program_id == program.id,
@@ -602,9 +600,9 @@ def _process_sage_program(payload: SageProgramInbound, db: Session):
                 contact_name=first_line.contact_name,
                 contact_phone=first_line.contact_phone,
                 driver_id=program.driver_id,
-                quantity_6kg=total_qty_6kg,
-                quantity_12kg=total_qty_12kg,
-                quantity=total_qty_6kg + total_qty_12kg,
+                quantity_6kg=0,
+                quantity_12kg=0,
+                quantity=0,
                 status=DeliveryStatusEnum.PENDING,
                 source_type="sage_inbound",
                 external_status=SageMissionStatusEnum.PENDING_APPROVAL,
@@ -780,7 +778,7 @@ def sync_sage_programs_today(
 def validate_program_to_sage(
     payload: ValidatedProgramWriteback,
     db: Session = Depends(get_db),
-    current_user=Depends(require_role(RoleEnum.ADMIN)),
+    current_user=Depends(require_role([RoleEnum.ADMIN, RoleEnum.RAVITAILLEUR])),
 ):
     """Écrit un programme validé dans Sage X3 et met à jour le statut.
 

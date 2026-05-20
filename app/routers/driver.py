@@ -43,6 +43,8 @@ class ProgramCompleteRequest(BaseModel):
 class CompleteDeliveryRequest(BaseModel):
     latitude: float
     longitude: float
+    quantity_6kg_delivered: int = 0
+    quantity_12kg_delivered: int = 0
 
 class SyncGPSPayload(BaseModel):
     latitude: float
@@ -1363,7 +1365,35 @@ def complete_delivery(
         timestamp=utc_now()
     )
     db.add(gps_log)
-    
+
+    # Update quantities delivered by driver
+    delivery.quantity_6kg = request.quantity_6kg_delivered
+    delivery.quantity_12kg = request.quantity_12kg_delivered
+    delivery.quantity = request.quantity_6kg_delivered + request.quantity_12kg_delivered
+    delivery.delivered_quantity_total = delivery.quantity
+
+    # Recalculate price automatically based on actual quantities delivered
+    if delivery.program and delivery.program.program_type == ProgramTypeEnum.DELIVERY:
+        from app.services.pricing_service import calculate_delivery_amount, resolve_active_pricing_rule
+        pricing_rule = resolve_active_pricing_rule(
+            db,
+            product_code=delivery.program_line.product_code if delivery.program_line else "",
+            depot_id=delivery.depot_id,
+        )
+        unit_price = pricing_rule.unit_price if pricing_rule else (delivery.unit_price_applied or 0)
+        tax_rate = pricing_rule.tax_rate if pricing_rule else (delivery.tax_rate_applied or 0)
+
+        amounts = calculate_delivery_amount(
+            quantity_delivered=delivery.quantity,
+            unit_price=unit_price,
+            tax_rate=tax_rate,
+        )
+        delivery.unit_price_applied = unit_price
+        delivery.tax_rate_applied = tax_rate
+        delivery.subtotal_amount = amounts["subtotal_amount"]
+        delivery.tax_amount = amounts["tax_amount"]
+        delivery.total_amount = amounts["total_amount"]
+
     # Marquer la livraison comme terminée
     delivery.status = DeliveryStatusEnum.COMPLETED
     delivery.actual_end = utc_now()
