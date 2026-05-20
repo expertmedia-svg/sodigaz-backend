@@ -780,7 +780,7 @@ def sync_sage_programs_today(
 def validate_program_to_sage(
     payload: ValidatedProgramWriteback,
     db: Session = Depends(get_db),
-    current_user=Depends(require_role(RoleEnum.DRIVER, RoleEnum.ADMIN)),
+    current_user=Depends(require_role(RoleEnum.ADMIN)),
 ):
     """Écrit un programme validé dans Sage X3 et met à jour le statut.
 
