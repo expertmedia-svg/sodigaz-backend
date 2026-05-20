@@ -747,6 +747,26 @@ def get_program(
     return program
 
 
+@router.get("/sage/test-programs")
+def test_sage_programs():
+    """Voir les programmes qui seraient synced (public - pour diagnostiquer)."""
+    try:
+        from app.services.sage_sql_service import lire_programmes_du_jour
+        programs = lire_programmes_du_jour()
+
+        return {
+            "status": "ok",
+            "count": len(programs),
+            "programs": programs[:5]  # Show first 5
+        }
+    except Exception as e:
+        logger.error(f"[SAGE SQL TEST] Error reading programs: {e}")
+        return {
+            "status": "error",
+            "error": str(e)
+        }
+
+
 @router.get("/sage/test-connection")
 def test_sage_connection():
     """Test la connexion Sage SQL (public - pour diagnostiquer)."""
