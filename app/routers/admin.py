@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
 from datetime import datetime, date, timedelta
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import io
 import csv
 import math
@@ -1070,6 +1070,9 @@ def validate_delivery_on_sage(
     current_user: User = Depends(require_role(RoleEnum.ADMIN))
 ):
     """Envoyer une livraison complétée à Sage X3 avec les quantités livrées (6kg/12kg)."""
+    from app.services.sage_sql_service import valider_programme_sage, get_sage_sql_connection
+    import pymssql
+
     delivery = db.query(Delivery).filter(Delivery.id == delivery_id).first()
     if not delivery:
         raise HTTPException(status_code=404, detail="Livraison introuvable")
@@ -1077,45 +1080,221 @@ def validate_delivery_on_sage(
     if delivery.status != DeliveryStatusEnum.COMPLETED:
         raise HTTPException(status_code=400, detail=f"La livraison doit être complétée (status actuel: {delivery.status})")
 
-    # Créer un événement IntegrationOutbox pour envoyer à Sage
-    outbox_event = IntegrationOutbox(
-        event_type="delivery_completed",
-        direction="outbound",
-        system_name="sage_x3",
-        aggregate_type="delivery",
-        aggregate_id=str(delivery.id),
-        external_message_id=f"delivery:{delivery.id}:{utc_now_iso()}",
-        status="pending",
-        payload_json={
+    # Récupérer la livraison avec ses détails
+    program_line = db.query(type(delivery)).filter(type(delivery).id == delivery_id).first()
+
+    try:
+        # Écrire dans Sage via IntegrationOutbox
+        outbox_event = IntegrationOutbox(
+            event_type="delivery_completed",
+            direction="outbound",
+            system_name="sage_x3",
+            aggregate_type="delivery",
+            aggregate_id=str(delivery.id),
+            external_message_id=f"delivery:{delivery.id}:{utc_now_iso()}",
+            status="pending",
+            payload_json={
+                "delivery_id": delivery.id,
+                "truck_id": delivery.truck_id,
+                "driver_id": delivery.driver_id,
+                "depot_id": delivery.depot_id,
+                "destination_name": delivery.destination_name,
+                "quantity_6kg": delivery.quantity_6kg,
+                "quantity_12kg": delivery.quantity_12kg,
+                "status": delivery.status,
+                "actual_start": delivery.actual_start.isoformat() if delivery.actual_start else None,
+                "actual_end": delivery.actual_end.isoformat() if delivery.actual_end else None,
+                "notes": delivery.notes,
+                "completed_at": utc_now_iso(),
+            },
+            response_json={"received_at": utc_now_iso()},
+            sent_at=utc_now(),
+        )
+
+        db.add(outbox_event)
+        db.commit()
+        db.refresh(outbox_event)
+
+        return {
+            "success": True,
+            "message": "Livraison validée et envoyée à Sage X3",
             "delivery_id": delivery.id,
-            "truck_id": delivery.truck_id,
-            "driver_id": delivery.driver_id,
-            "depot_id": delivery.depot_id,
-            "destination_name": delivery.destination_name,
-            "quantity_6kg": delivery.quantity_6kg,
-            "quantity_12kg": delivery.quantity_12kg,
-            "status": delivery.status,
-            "actual_start": delivery.actual_start.isoformat() if delivery.actual_start else None,
-            "actual_end": delivery.actual_end.isoformat() if delivery.actual_end else None,
-            "notes": delivery.notes,
-            "completed_at": utc_now_iso(),
-        },
-        response_json={"received_at": utc_now_iso()},
-        sent_at=utc_now(),
-    )
+            "outbox_id": outbox_event.id,
+            "status": outbox_event.status,
+            "payload": outbox_event.payload_json,
+        }
+    except Exception as e:
+        logger.error(f"Erreur validation livraison Sage: {e}")
+        return {
+            "success": False,
+            "message": f"Erreur lors de la validation: {str(e)}",
+            "delivery_id": delivery.id,
+        }
 
-    db.add(outbox_event)
-    db.commit()
-    db.refresh(outbox_event)
 
-    return {
-        "success": True,
-        "message": "Livraison validée et envoyée à Sage X3",
-        "delivery_id": delivery.id,
-        "outbox_id": outbox_event.id,
-        "status": outbox_event.status,
-        "payload": outbox_event.payload_json,
-    }
+class ArticleLineWrite(BaseModel):
+    """Données d'article à écrire dans Sage X3."""
+    article_code: str = Field(..., description="Code article (G06BI, G1250, G0275, etc.)")
+    quantity: float = Field(..., ge=0, description="Quantité collectée")
+    unit_price: float = Field(default=0, description="Prix unitaire")
+    comment: str = Field(default="", description="Commentaire (optionnel)")
+
+
+class DeliveryArticleValidation(BaseModel):
+    """Validation d'une livraison avec articles collectés."""
+    program_code: str = Field(..., description="Code programme Sage (ex: PCOL-CA001-190526-1746)")
+    client_code: str = Field(..., description="Code client")
+    articles: list[ArticleLineWrite] = Field(..., description="Articles collectés")
+
+
+@router.post("/deliveries/write-sage-articles")
+def write_delivery_articles_to_sage(
+    payload: DeliveryArticleValidation,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(RoleEnum.ADMIN))
+):
+    """Écrire les articles collectés dans Sage X3 pour une livraison complétée.
+
+    - Article 1 → UPDATE ligne existante
+    - Article 2+ → INSERT nouvelles lignes (dupliquées)
+    """
+    from app.services.sage_sql_service import get_sage_sql_connection
+    from app.config import settings
+
+    if not payload.articles:
+        raise HTTPException(status_code=400, detail="Au moins un article doit être fourni")
+
+    try:
+        conn = get_sage_sql_connection()
+        cursor = conn.cursor()
+        schema = settings.SAGE_SQL_SCHEMA
+
+        # Récupérer la première ligne existante du client pour ce programme
+        cursor.execute(
+            f"""
+            SELECT YLIGNE_0, YBPC_0, YPLV_0, YQUARTIER_0, MDL_0, YDATE_0
+            FROM [{schema}].[YPRGCOLLD]
+            WHERE YPROGCOLL_0 = %s AND YBPC_0 = %s
+            ORDER BY YLIGNE_0
+            LIMIT 1
+            """,
+            (payload.program_code, payload.client_code)
+        )
+
+        result = cursor.fetchone()
+        if not result:
+            conn.close()
+            raise HTTPException(status_code=404, detail=f"Client {payload.client_code} non trouvé dans ce programme")
+
+        first_line = result[0]
+        client_plv = result[2]
+        client_zone = result[3]
+        delivery_mode = result[4]
+        delivery_date = result[5]
+
+        # Récupérer le max numéro de ligne pour les insertions futures
+        cursor.execute(
+            f"SELECT ISNULL(MAX(YLIGNE_0), 0) FROM [{schema}].[YPRGCOLLD] WHERE YPROGCOLL_0 = %s",
+            (payload.program_code,)
+        )
+        max_line = int(cursor.fetchone()[0])
+
+        results = []
+
+        # ── ARTICLE 1 — UPDATE ligne existante ──────────────────────
+        if len(payload.articles) > 0:
+            article = payload.articles[0]
+            amount = article.quantity * article.unit_price
+
+            cursor.execute(
+                f"""
+                UPDATE [{schema}].[YPRGCOLLD]
+                SET YITMREF_0 = %s,
+                    YQTY_0 = %s,
+                    YSMREMB_0 = %s,
+                    YDES_0 = %s,
+                    UPDDATTIM_0 = GETDATE(),
+                    UPDUSR_0 = 'SODIGAZ_APP'
+                WHERE YPROGCOLL_0 = %s AND YBPC_0 = %s AND YLIGNE_0 = %s
+                """,
+                (article.article_code, article.quantity, amount, article.comment,
+                 payload.program_code, payload.client_code, first_line)
+            )
+            rows_affected = cursor.rowcount
+            results.append({
+                "article": article.article_code,
+                "quantity": article.quantity,
+                "amount": amount,
+                "action": "UPDATE",
+                "line": first_line,
+                "rows_affected": rows_affected,
+            })
+
+        # ── ARTICLES 2+ — INSERT lignes dupliquées ──────────────────────
+        for i in range(1, len(payload.articles)):
+            article = payload.articles[i]
+            max_line += 1
+            amount = article.quantity * article.unit_price
+
+            cursor.execute(
+                f"""
+                INSERT INTO [{schema}].[YPRGCOLLD]
+                (YPROGCOLL_0, YLIGNE_0, YBPC_0, YPLV_0, YQUARTIER_0,
+                 YITMREF_0, YQTY_0, YSMREMB_0, YDES_0, MDL_0, YDATE_0,
+                 CREDATTIM_0, UPDDATTIM_0, CREUSR_0, UPDUSR_0, UPDTICK_0)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        GETDATE(), GETDATE(), 'SODIGAZ_APP', 'SODIGAZ_APP', 1)
+                """,
+                (payload.program_code, max_line, payload.client_code, client_plv, client_zone,
+                 article.article_code, article.quantity, amount, article.comment,
+                 delivery_mode, delivery_date)
+            )
+            rows_affected = cursor.rowcount
+            results.append({
+                "article": article.article_code,
+                "quantity": article.quantity,
+                "amount": amount,
+                "action": "INSERT",
+                "line": max_line,
+                "rows_affected": rows_affected,
+            })
+
+        conn.commit()
+        conn.close()
+
+        # Créer un événement IntegrationOutbox pour archivage
+        outbox_event = IntegrationOutbox(
+            event_type="delivery_articles_written",
+            direction="outbound",
+            system_name="sage_x3",
+            aggregate_type="delivery_line",
+            aggregate_id=f"{payload.program_code}:{payload.client_code}",
+            external_message_id=f"articles:{payload.program_code}:{payload.client_code}:{utc_now_iso()}",
+            status="sent",
+            payload_json={
+                "program_code": payload.program_code,
+                "client_code": payload.client_code,
+                "articles_written": results,
+                "written_at": utc_now_iso(),
+            },
+            response_json={"completed_at": utc_now_iso()},
+            sent_at=utc_now(),
+        )
+        db.add(outbox_event)
+        db.commit()
+
+        return {
+            "success": True,
+            "message": f"✅ {len(results)} article(s) écrit(s) dans Sage X3",
+            "program_code": payload.program_code,
+            "client_code": payload.client_code,
+            "articles_written": results,
+            "total_amount": sum(r["amount"] for r in results),
+        }
+
+    except Exception as e:
+        logger.error(f"Erreur écriture articles Sage: {e}")
+        raise HTTPException(status_code=500, detail=f"Erreur Sage: {str(e)}")
 
 # --- CHAUFFEURS ---
 
