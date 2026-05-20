@@ -34,7 +34,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 class LoginRequest(BaseModel):
-    email: str
+    identifier: str = Field(..., description="Username ou email")
     password: str
 
 class ProgramCompleteRequest(BaseModel):
@@ -753,8 +753,8 @@ def require_driver_role(current_user: User = Depends(get_current_user)):
 
 @router.post("/login")
 def login_driver(credentials: LoginRequest, db: Session = Depends(get_db)):
-    """Connexion ravitailleur"""
-    identifier = credentials.email.strip()
+    """Connexion ravitailleur avec username ou email"""
+    identifier = credentials.identifier.strip()
     user = db.query(User).filter(
         or_(User.email == identifier, User.username == identifier)
     ).first()
