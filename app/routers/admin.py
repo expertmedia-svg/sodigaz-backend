@@ -1172,11 +1172,10 @@ def write_delivery_articles_to_sage(
         # Récupérer la première ligne existante du client pour ce programme
         cursor.execute(
             f"""
-            SELECT YLIGNE_0, YBPC_0, YPLV_0, YQUARTIER_0, MDL_0, YDATE_0, SOHNUM_0, SOPLIN_0
+            SELECT TOP 1 YLIGNE_0, YBPC_0, YPLV_0, YQUARTIER_0, MDL_0, YDATE_0, SOHNUM_0, SOPLIN_0
             FROM [{schema}].[YPRGCOLLD]
             WHERE YPROGCOLL_0 = %s AND YBPC_0 = %s
             ORDER BY YLIGNE_0
-            LIMIT 1
             """,
             (payload.program_code, payload.client_code)
         )
