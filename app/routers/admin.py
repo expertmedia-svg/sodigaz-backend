@@ -1063,6 +1063,60 @@ def get_delivery_gps_history(delivery_id: int, db: Session = Depends(get_db), cu
     logs = db.query(GPSLog).filter(GPSLog.delivery_id == delivery_id).order_by(GPSLog.timestamp).all()
     return [GPSLogResponse.from_orm(log) for log in logs]
 
+@router.post("/deliveries/{delivery_id}/validate-sage")
+def validate_delivery_on_sage(
+    delivery_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(RoleEnum.ADMIN))
+):
+    """Envoyer une livraison complétée à Sage X3 avec les quantités livrées (6kg/12kg)."""
+    delivery = db.query(Delivery).filter(Delivery.id == delivery_id).first()
+    if not delivery:
+        raise HTTPException(status_code=404, detail="Livraison introuvable")
+
+    if delivery.status != DeliveryStatusEnum.COMPLETED:
+        raise HTTPException(status_code=400, detail=f"La livraison doit être complétée (status actuel: {delivery.status})")
+
+    # Créer un événement IntegrationOutbox pour envoyer à Sage
+    outbox_event = IntegrationOutbox(
+        event_type="delivery_completed",
+        direction="outbound",
+        system_name="sage_x3",
+        aggregate_type="delivery",
+        aggregate_id=str(delivery.id),
+        external_message_id=f"delivery:{delivery.id}:{utc_now_iso()}",
+        status="pending",
+        payload_json={
+            "delivery_id": delivery.id,
+            "truck_id": delivery.truck_id,
+            "driver_id": delivery.driver_id,
+            "depot_id": delivery.depot_id,
+            "destination_name": delivery.destination_name,
+            "quantity_6kg": delivery.quantity_6kg,
+            "quantity_12kg": delivery.quantity_12kg,
+            "status": delivery.status,
+            "actual_start": delivery.actual_start.isoformat() if delivery.actual_start else None,
+            "actual_end": delivery.actual_end.isoformat() if delivery.actual_end else None,
+            "notes": delivery.notes,
+            "completed_at": utc_now_iso(),
+        },
+        response_json={"received_at": utc_now_iso()},
+        sent_at=utc_now(),
+    )
+
+    db.add(outbox_event)
+    db.commit()
+    db.refresh(outbox_event)
+
+    return {
+        "success": True,
+        "message": "Livraison validée et envoyée à Sage X3",
+        "delivery_id": delivery.id,
+        "outbox_id": outbox_event.id,
+        "status": outbox_event.status,
+        "payload": outbox_event.payload_json,
+    }
+
 # --- CHAUFFEURS ---
 
 @router.get("/drivers", response_model=list[UserResponse])
