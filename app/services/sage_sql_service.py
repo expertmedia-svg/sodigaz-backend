@@ -47,9 +47,10 @@ def lire_programmes_du_jour() -> list[dict[str, Any]]:
     conn = get_sage_sql_connection()
     try:
         cursor = conn.cursor()
+        database = settings.SAGE_SQL_DATABASE
         schema = settings.SAGE_SQL_SCHEMA
 
-        logger.info(f"[SAGE SQL] Querying with schema: {schema}")
+        logger.info(f"[SAGE SQL] Querying {database}.{schema}.YPRGCOLL")
 
         cursor.execute(
             f"""
@@ -65,7 +66,7 @@ def lire_programmes_du_jour() -> list[dict[str, Any]]:
                 p.YFLGVAL2_0,
                 p.YTACHERON1_0,
                 p.YTACHERON2_0
-            FROM [{schema}].[YPRGCOLL] p
+            FROM [{database}].[{schema}].[YPRGCOLL] p
             WHERE p.YFLGVAL2_0 = 1
             AND CAST(p.YDATE_0 AS DATE) >= CAST(DATEADD(day, -1, GETDATE()) AS DATE)
             ORDER BY p.YDATE_0 DESC, p.YTIME_0
@@ -99,7 +100,7 @@ def lire_programmes_du_jour() -> list[dict[str, Any]]:
                     d.YNUMFICHE_0,
                     d.YDES_0,
                     d.YSMREMB_0
-                FROM [{schema}].[YPRGCOLLD] d
+                FROM [{database}].[{schema}].[YPRGCOLLD] d
                 WHERE d.YPROGCOLL_0 = %s
                 ORDER BY d.YLIGNE_0
                 """,
@@ -192,7 +193,7 @@ def lire_tous_programmes_sage() -> list[dict[str, Any]]:
     conn = get_sage_sql_connection()
     try:
         cursor = conn.cursor()
-        db = settings.SAGE_SQL_DATABASE
+        database = settings.SAGE_SQL_DATABASE
         schema = settings.SAGE_SQL_SCHEMA
 
         cursor.execute(
@@ -208,8 +209,8 @@ def lire_tous_programmes_sage() -> list[dict[str, Any]]:
                 p.YFLGVAL_0,
                 p.YFLGVAL2_0,
                 COUNT(d.YLIGNE_0) as line_count
-            FROM [{schema}].[YPRGCOLL] p
-            LEFT JOIN [{schema}].[YPRGCOLLD] d ON d.YPROGCOLL_0 = p.YPROGCOLL_0
+            FROM [{database}].[{schema}].[YPRGCOLL] p
+            LEFT JOIN [{database}].[{schema}].[YPRGCOLLD] d ON d.YPROGCOLL_0 = p.YPROGCOLL_0
             GROUP BY p.YPROGCOLL_0, p.YFCY_0, p.YLIV_0, p.YMATCAM_0, p.YDATE_0, p.YTIME_0, p.YGFLAG_0, p.YFLGVAL_0, p.YFLGVAL2_0
             ORDER BY p.YDATE_0 DESC, p.YPROGCOLL_0 DESC
             """
