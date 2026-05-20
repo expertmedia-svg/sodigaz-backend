@@ -835,12 +835,17 @@ def list_programs(
     db: Session = Depends(get_db),
     current_user=Depends(require_role(RoleEnum.ADMIN)),
 ):
-    query = db.query(Program).order_by(Program.program_date.desc(), Program.updated_at.desc())
-    if status:
-        query = query.filter(Program.status == status)
+    query = db.query(Program)
+    # Filter by status if specified (but allow 'all' to bypass filter)
+    if status and status.lower() != "all":
+        # Support both 'pending' and 'UNASSIGNED' status values for flexibility
+        if status.lower() in ('pending', 'unassigned'):
+            query = query.filter(Program.status.in_(['pending', 'UNASSIGNED', status]))
+        else:
+            query = query.filter(Program.status == status)
     if program_type:
         query = query.filter(Program.program_type == program_type)
-    return query.limit(limit).all()
+    return query.order_by(Program.program_date.desc(), Program.updated_at.desc()).limit(limit).all()
 
 
 @router.get("/programs/{program_code}", response_model=ProgramResponse)
