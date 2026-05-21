@@ -853,6 +853,16 @@ def _resolve_driver_operational_truck(
         Truck.is_active == True,
     ).order_by(Truck.id.asc()).first()
 
+@router.get("/test-bootstrap")
+def test_bootstrap():
+    """Test endpoint to verify API is reachable"""
+    logger.info("[TEST] test-bootstrap called")
+    return {
+        "status": "ok",
+        "message": "API is reachable",
+        "timestamp": utc_now_iso()
+    }
+
 @router.get("/bootstrap")
 def get_driver_bootstrap(
     current_user: User = Depends(require_driver_role),
