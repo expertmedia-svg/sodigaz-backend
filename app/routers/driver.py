@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import or_
+from sqlalchemy import or_, cast, String
 from sqlalchemy.orm import Session, joinedload
 from datetime import datetime, timedelta
 from app.database import get_db
@@ -875,7 +875,7 @@ def whoami(current_user: User = Depends(require_driver_role), db: Session = Depe
     deliveries_count = db.query(Delivery).filter(Delivery.driver_id == current_user.id).count()
     pending_count = db.query(Delivery).filter(
         Delivery.driver_id == current_user.id,
-        Delivery.status.in_(["pending", "in_progress"])
+        cast(Delivery.status, String).in_(["pending", "in_progress"])
     ).count()
 
     return {
@@ -908,7 +908,7 @@ def get_driver_bootstrap(
     # ✅ Only active missions - NEVER include completed
     deliveries = db.query(Delivery).filter(
         Delivery.driver_id == current_user.id,
-        Delivery.status.in_(["pending", "in_progress"])
+        cast(Delivery.status, String).in_(["pending", "in_progress"])
     ).order_by(Delivery.scheduled_date).all()
 
     # Eager load program_line for each delivery
