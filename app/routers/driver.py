@@ -756,35 +756,41 @@ def require_driver_role(current_user: User = Depends(get_current_user)):
 @router.post("/login")
 def login_driver(credentials: LoginRequest, db: Session = Depends(get_db)):
     """Connexion ravitailleur avec username ou email"""
-    identifier = credentials.identifier.strip()
-    user = db.query(User).filter(
-        or_(User.email == identifier, User.username == identifier)
-    ).first()
-    
-    if not user or not verify_password(credentials.password, user.hashed_password):
-        raise HTTPException(
-            status_code=401,
-            detail="Identifiant ou mot de passe incorrect",
-        )
-    
-    if user.role != RoleEnum.RAVITAILLEUR:
-        raise HTTPException(status_code=403, detail="Accès réservé aux ravitailleurs")
-    
-    if not user.is_active:
-        raise HTTPException(status_code=403, detail="Compte désactivé")
-    
-    access_token = create_access_token(data={"sub": str(user.id)})
-    
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "user": {
-            "id": user.id,
-            "email": user.email,
-            "full_name": user.full_name,
-            "role": user.role.value
+    try:
+        identifier = credentials.identifier.strip()
+        user = db.query(User).filter(
+            or_(User.email == identifier, User.username == identifier)
+        ).first()
+
+        if not user or not verify_password(credentials.password, user.hashed_password):
+            raise HTTPException(
+                status_code=401,
+                detail="Identifiant ou mot de passe incorrect",
+            )
+
+        if user.role != RoleEnum.RAVITAILLEUR:
+            raise HTTPException(status_code=403, detail="Accès réservé aux ravitailleurs")
+
+        if not user.is_active:
+            raise HTTPException(status_code=403, detail="Compte désactivé")
+
+        access_token = create_access_token(data={"sub": str(user.id)})
+
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user": {
+                "id": user.id,
+                "email": user.email,
+                "full_name": user.full_name,
+                "role": user.role.value
+            }
         }
-    }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[LOGIN ERROR] {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Login error: {str(e)}")
 
 @router.get("/me")
 def get_current_driver(current_user: User = Depends(require_driver_role)):
