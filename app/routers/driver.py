@@ -939,7 +939,7 @@ def get_driver_bootstrap(
         depot = db.query(Depot).filter(Depot.id == delivery.depot_id).first()
         assignments.append({
             "id": delivery.id,
-            "status": delivery.status.value,
+            "status": delivery.status,
             "scheduled_time": delivery.scheduled_date.isoformat() if delivery.scheduled_date else None,
             "destination_name": delivery.destination_name or "Client",
             "destination_address": delivery.destination_address or "-",
