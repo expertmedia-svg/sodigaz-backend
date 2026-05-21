@@ -712,6 +712,14 @@ def _process_delivery_confirmation(
             if sage_result.get("program_validated"):
                 logger.info(f"[SAGE_WRITE] 🎉 PROGRAMME {delivery.program.program_code} VALIDÉ SUR SAGE (YFLGVAL2_0=2)")
                 delivery.program.status = "completed"
+                # Mark all deliveries in this program as synced
+                program_deliveries = db.query(Delivery).filter(
+                    Delivery.program_id == delivery.program_id,
+                ).all()
+                for prog_delivery in program_deliveries:
+                    prog_delivery.external_status = "synced"
+                    logger.info(f"[SAGE_WRITE] 📍 Delivery {prog_delivery.id} marked as synced")
+                db.commit()
         else:
             logger.error(f"[SAGE_WRITE] ❌ Erreur: {sage_result['detail']}")
 
