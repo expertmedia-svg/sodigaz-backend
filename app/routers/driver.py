@@ -875,7 +875,7 @@ def whoami(current_user: User = Depends(require_driver_role), db: Session = Depe
     deliveries_count = db.query(Delivery).filter(Delivery.driver_id == current_user.id).count()
     pending_count = db.query(Delivery).filter(
         Delivery.driver_id == current_user.id,
-        Delivery.status == "pending"
+        Delivery.status.in_([DeliveryStatusEnum.PENDING, DeliveryStatusEnum.IN_PROGRESS])
     ).count()
 
     return {
