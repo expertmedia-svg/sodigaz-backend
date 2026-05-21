@@ -706,6 +706,8 @@ def _process_delivery_confirmation(
             client_code=client_code,
             qty_6kg=qty_6kg,
             qty_12kg=qty_12kg,
+            notes=payload.notes,
+            total_amount_6kg=amount_summary["total_amount"] if (program_type == ProgramTypeEnum.DELIVERY.value and qty_6kg > 0 and amount_summary) else 0,
         )
 
         if sage_result["status"] == "OK":

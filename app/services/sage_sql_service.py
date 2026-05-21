@@ -247,6 +247,8 @@ def ecrire_livraison_sage(
     client_code: str,
     qty_6kg: int,
     qty_12kg: int,
+    notes: str = None,
+    total_amount_6kg: float = 0,
 ) -> dict[str, Any]:
     """Écrit UNE SEULE livraison dans Sage X3 immédiatement.
 
@@ -258,6 +260,8 @@ def ecrire_livraison_sage(
         client_code: Code client
         qty_6kg: Quantité 6kg confirmée
         qty_12kg: Quantité 12kg confirmée
+        notes: Commentaire du driver (YDES_0)
+        total_amount_6kg: Montant total 6kg (YSMREMB_0)
 
     Returns:
         {status: OK/ERROR, detail: message, program_validated: bool}
@@ -277,14 +281,16 @@ def ecrire_livraison_sage(
             cursor.execute(
                 f"""
                 UPDATE {schema}.YPRGCOLLD
-                SET YQTY_0 = %s
+                SET YQTY_0 = %s,
+                    YSMREMB_0 = CAST(%s AS nvarchar),
+                    YDES_0 = %s
                 WHERE YPROGCOLL_0 = %s
                 AND YBPC_0 = %s
                 AND YITMREF_0 = 'G06BI'
                 """,
-                (qty_6kg, num_programme.strip(), client_code)
+                (qty_6kg, total_amount_6kg, notes or '', num_programme.strip(), client_code)
             )
-            logger.info(f"[SAGE SQL] UPDATE {client_code} 6kg: {cursor.rowcount} ligne(s)")
+            logger.info(f"[SAGE SQL] UPDATE {client_code} 6kg: {cursor.rowcount} ligne(s) - Qty={qty_6kg}, Montant={total_amount_6kg}, Notes={notes}")
 
         # INSERT nouvelle ligne pour 12kg si qty > 0
         if qty_12kg > 0:
@@ -298,12 +304,12 @@ def ecrire_livraison_sage(
             cursor.execute(
                 f"""
                 INSERT INTO {schema}.YPRGCOLLD
-                (YPROGCOLL_0, YLIGNE_0, YBPC_0, YQTY_0, YITMREF_0)
-                VALUES (%s, %s, %s, %s, 'G1250')
+                (YPROGCOLL_0, YLIGNE_0, YBPC_0, YQTY_0, YITMREF_0, YSMREMB_0, YDES_0)
+                VALUES (%s, %s, %s, %s, 'G1250', CAST(%s AS nvarchar), %s)
                 """,
-                (num_programme.strip(), next_line, client_code, qty_12kg)
+                (num_programme.strip(), next_line, client_code, qty_12kg, 0, notes or '')
             )
-            logger.info(f"[SAGE SQL] INSERT {client_code} 12kg: ligne {next_line}")
+            logger.info(f"[SAGE SQL] INSERT {client_code} 12kg: ligne {next_line} - Qty={qty_12kg}, Notes={notes}")
 
         # Vérifie si TOUTES les lignes du programme sont complétées
         cursor.execute(
@@ -312,7 +318,6 @@ def ecrire_livraison_sage(
                    SUM(CASE WHEN YQTY_0 > 0 THEN 1 ELSE 0 END) as completed
             FROM {schema}.YPRGCOLLD
             WHERE YPROGCOLL_0 = %s
-            AND [STATUS] != 'C'
             """,
             (num_programme.strip(),)
         )
