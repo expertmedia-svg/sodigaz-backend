@@ -527,6 +527,7 @@ def _process_sage_program(payload: SageProgramInbound, db: Session):
         total_qty_6kg = 0
         total_qty_12kg = 0
         first_line = client_lines[0]
+        first_program_line_id = None
 
         for inbound_line in client_lines:
             qty_6kg, qty_12kg = _delivery_quantities(
@@ -565,6 +566,10 @@ def _process_sage_program(payload: SageProgramInbound, db: Session):
             program_line.collection_sheet = inbound_line.collection_sheet
             program_line.comment = inbound_line.comment
             db.flush()
+
+            # Track the first program_line database object for this location
+            if first_program_line_id is None:
+                first_program_line_id = program_line.id
 
         # Create 1 delivery with quantities = 0 (driver will fill in actual quantities)
         pricing_rule = resolve_active_pricing_rule(
@@ -607,7 +612,7 @@ def _process_sage_program(payload: SageProgramInbound, db: Session):
                 notes=f"Programme Sage X3 {program.program_code}",
                 program_type=program.program_type.value,
                 program_id=program.id,
-                program_line_id=first_line.id,
+                program_line_id=first_program_line_id,
                 pricing_rule_id=pricing_rule.id if pricing_rule else None,
                 unit_price_applied=unit_price,
                 tax_rate_applied=tax_rate,
