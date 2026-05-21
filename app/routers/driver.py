@@ -521,12 +521,13 @@ def _process_delivery_confirmation(
             conflict_type="delivery_already_completed",
             local_payload=payload_dict,
             server_state={
-                "delivery_status": delivery.status.value,
+                "delivery_status": delivery.status.value if hasattr(delivery.status, "value") else str(delivery.status),
                 "actual_end": delivery.actual_end.isoformat() if delivery.actual_end else None,
                 "end_latitude": delivery.end_latitude,
                 "end_longitude": delivery.end_longitude,
             },
         )
+        status_str = delivery.status.value if hasattr(delivery.status, "value") else str(delivery.status)
         return _build_operation_result(
             operation.idempotency_key,
             "conflict",
@@ -535,7 +536,7 @@ def _process_delivery_confirmation(
             retryable=False,
             conflict_id=conflict.id,
             delivery_id=delivery.id,
-            server_delivery_status=delivery.status.value,
+            server_delivery_status=status_str,
         )
 
     amount_summary = None
