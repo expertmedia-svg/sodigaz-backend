@@ -27,7 +27,7 @@ import logging
 from app.auth import get_current_user, verify_password, create_access_token
 from app.services.pricing_service import resolve_program_line_amount
 from app.services.outbox_worker import process_pending_outbox_events
-from app.services.sage_sql_service import valider_programme_sage
+from app.services.sage_sql_service import valider_programme_sage, ecrire_livraison_sage
 from app.time_utils import utc_now, utc_now_iso
 
 router = APIRouter()
@@ -680,6 +680,40 @@ def _process_delivery_confirmation(
     )
 
     logger.info(f"[CONFIRMATION] ✅ Livraison {delivery.id} confirmée - Statut: {delivery.status.value}")
+
+    # 🔥 ÉCRIRE IMMÉDIATEMENT SUR SAGE X3
+    if delivery.program and delivery.program.source_system == "sage_x3" and delivery.program.program_code:
+        client_code = delivery.program_line.client_code if delivery.program_line else ""
+        qty_6kg = 0
+        qty_12kg = 0
+
+        if program_type == ProgramTypeEnum.DELIVERY.value:
+            if product_type == "GAZ_6KG":
+                qty_6kg = confirmed_quantity
+            else:
+                qty_12kg = confirmed_quantity
+        else:  # COLLECTION
+            if product_type == "GAZ_6KG":
+                qty_6kg = confirmed_quantity
+            else:
+                qty_12kg = confirmed_quantity
+
+        logger.info(f"[SAGE_WRITE] Écriture livraison sur Sage: {delivery.program.program_code}/{client_code} → 6kg={qty_6kg}, 12kg={qty_12kg}")
+
+        sage_result = ecrire_livraison_sage(
+            num_programme=delivery.program.program_code,
+            client_code=client_code,
+            qty_6kg=qty_6kg,
+            qty_12kg=qty_12kg,
+        )
+
+        if sage_result["status"] == "OK":
+            logger.info(f"[SAGE_WRITE] ✅ Livraison écrite sur Sage")
+            if sage_result.get("program_validated"):
+                logger.info(f"[SAGE_WRITE] 🎉 PROGRAMME {delivery.program.program_code} VALIDÉ SUR SAGE (YFLGVAL2_0=2)")
+                delivery.program.status = "completed"
+        else:
+            logger.error(f"[SAGE_WRITE] ❌ Erreur: {sage_result['detail']}")
 
     if delivery.program:
         logger.info(f"[CONFIRMATION] Rafraîchissement du programme {delivery.program.program_code}...")

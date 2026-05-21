@@ -242,6 +242,115 @@ def lire_tous_programmes_sage() -> list[dict[str, Any]]:
         conn.close()
 
 
+def ecrire_livraison_sage(
+    num_programme: str,
+    client_code: str,
+    qty_6kg: int,
+    qty_12kg: int,
+) -> dict[str, Any]:
+    """Écrit UNE SEULE livraison dans Sage X3 immédiatement.
+
+    Appelé après chaque confirmation du driver.
+    Vérifie si c'est la dernière ligne → met YFLGVAL2_0=2
+
+    Args:
+        num_programme: Code du programme Sage
+        client_code: Code client
+        qty_6kg: Quantité 6kg confirmée
+        qty_12kg: Quantité 12kg confirmée
+
+    Returns:
+        {status: OK/ERROR, detail: message, program_validated: bool}
+    """
+    conn = get_sage_sql_connection()
+    try:
+        cursor = conn.cursor()
+        schema = settings.SAGE_SQL_SCHEMA
+        database = settings.SAGE_SQL_DATABASE
+
+        logger.info(f"[SAGE SQL] Écriture livraison: {num_programme} / {client_code} → 6kg={qty_6kg}, 12kg={qty_12kg}")
+
+        cursor.execute(f"USE {database}")
+
+        # UPDATE la ligne 6kg existante
+        if qty_6kg > 0:
+            cursor.execute(
+                f"""
+                UPDATE {schema}.YPRGCOLLD
+                SET YQTY_0 = %s
+                WHERE YPROGCOLL_0 = %s
+                AND YBPC_0 = %s
+                AND YITMREF_0 = 'G06BI'
+                """,
+                (qty_6kg, num_programme.strip(), client_code)
+            )
+            logger.info(f"[SAGE SQL] UPDATE {client_code} 6kg: {cursor.rowcount} ligne(s)")
+
+        # INSERT nouvelle ligne pour 12kg si qty > 0
+        if qty_12kg > 0:
+            cursor.execute(
+                f"SELECT MAX(YLIGNE_0) FROM {schema}.YPRGCOLLD WHERE YPROGCOLL_0 = %s",
+                (num_programme.strip(),)
+            )
+            max_line = cursor.fetchone()[0]
+            next_line = (max_line or 0) + 1
+
+            cursor.execute(
+                f"""
+                INSERT INTO {schema}.YPRGCOLLD
+                (YPROGCOLL_0, YLIGNE_0, YBPC_0, YQTY_0, YITMREF_0)
+                VALUES (%s, %s, %s, %s, 'G1250')
+                """,
+                (num_programme.strip(), next_line, client_code, qty_12kg)
+            )
+            logger.info(f"[SAGE SQL] INSERT {client_code} 12kg: ligne {next_line}")
+
+        # Vérifie si TOUTES les lignes du programme sont complétées
+        cursor.execute(
+            f"""
+            SELECT COUNT(*) as total,
+                   SUM(CASE WHEN YQTY_0 > 0 THEN 1 ELSE 0 END) as completed
+            FROM {schema}.YPRGCOLLD
+            WHERE YPROGCOLL_0 = %s
+            AND [STATUS] != 'C'
+            """,
+            (num_programme.strip(),)
+        )
+        result = cursor.fetchone()
+        total_lines = result[0] if result else 0
+        completed_lines = result[1] if result else 0
+
+        program_validated = False
+        if total_lines > 0 and completed_lines >= total_lines:
+            # Toutes les lignes sont complétées → valider le programme
+            cursor.execute(
+                f"UPDATE {schema}.YPRGCOLL SET YFLGVAL2_0 = 2 WHERE YPROGCOLL_0 = %s",
+                (num_programme.strip(),)
+            )
+            program_validated = True
+            logger.info(f"[SAGE SQL] ✅ Programme {num_programme} VALIDÉ (YFLGVAL2_0=2) — {completed_lines}/{total_lines} lignes")
+
+        conn.commit()
+
+        return {
+            "status": "OK",
+            "detail": f"Livraison {client_code} écrite dans Sage",
+            "program_validated": program_validated,
+            "total_lines": total_lines,
+            "completed_lines": completed_lines,
+        }
+    except Exception as exc:
+        logger.error(f"[SAGE SQL] Erreur écriture livraison {num_programme}/{client_code}: {exc}")
+        conn.rollback()
+        return {
+            "status": "ERROR",
+            "detail": str(exc),
+            "program_validated": False,
+        }
+    finally:
+        conn.close()
+
+
 def ecrire_programme_valide_sage(
     num_programme: str,
     livraisons: list[dict[str, Any]]
