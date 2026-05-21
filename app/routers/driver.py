@@ -946,6 +946,8 @@ def get_driver_bootstrap(
             },
         ]
 
+    logger.info(f"[BOOTSTRAP] Returning {len(assignments)} assignments for driver {current_user.id}")
+
     return {
         "driver": {
             "id": current_user.id,
