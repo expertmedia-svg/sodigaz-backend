@@ -607,6 +607,7 @@ def _process_sage_program(payload: SageProgramInbound, db: Session):
                 notes=f"Programme Sage X3 {program.program_code}",
                 program_type=program.program_type.value,
                 program_id=program.id,
+                program_line_id=first_line.id,
                 pricing_rule_id=pricing_rule.id if pricing_rule else None,
                 unit_price_applied=unit_price,
                 tax_rate_applied=tax_rate,
