@@ -1538,3 +1538,46 @@ def complete_delivery(
     }
 
     return result
+
+
+class ValidatedProgramInfo(BaseModel):
+    """Info sur un programme validé (envoyé à Sage)."""
+    program_code: str
+    total_lines: int
+    total_amount: float
+    status: str
+    validated_at: Optional[str] = None
+
+
+@router.get("/driver/validated-programs", response_model=list[ValidatedProgramInfo])
+def get_validated_programs(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Retourne les programmes validés et envoyés à Sage (status=completed)."""
+    try:
+        programs = db.query(Program).filter(
+            Program.status == "completed",
+            Program.source_system == "sage_x3",
+        ).order_by(Program.updated_at.desc()).limit(50).all()
+
+        result = []
+        for program in programs:
+            total_amount = sum(
+                (line.total_amount or 0) for line in program.lines
+                if line.status != "cancelled"
+            )
+            result.append(
+                ValidatedProgramInfo(
+                    program_code=program.program_code,
+                    total_lines=len([l for l in program.lines if l.status != "cancelled"]),
+                    total_amount=total_amount,
+                    status=program.status,
+                    validated_at=program.updated_at.isoformat() if program.updated_at else None,
+                )
+            )
+
+        return result
+    except Exception as e:
+        logger.error(f"[DRIVER API] Erreur récupération programmes validés: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
