@@ -875,7 +875,7 @@ def whoami(current_user: User = Depends(require_driver_role), db: Session = Depe
     deliveries_count = db.query(Delivery).filter(Delivery.driver_id == current_user.id).count()
     pending_count = db.query(Delivery).filter(
         Delivery.driver_id == current_user.id,
-        Delivery.status.in_([DeliveryStatusEnum.PENDING, DeliveryStatusEnum.IN_PROGRESS])
+        Delivery.status.in_(["pending", "in_progress"])
     ).count()
 
     return {
@@ -908,10 +908,7 @@ def get_driver_bootstrap(
     # ✅ Only active missions - NEVER include completed
     deliveries = db.query(Delivery).filter(
         Delivery.driver_id == current_user.id,
-        Delivery.status.in_([
-            DeliveryStatusEnum.PENDING,
-            DeliveryStatusEnum.IN_PROGRESS,
-        ])
+        Delivery.status.in_(["pending", "in_progress"])
     ).order_by(Delivery.scheduled_date).all()
 
     # Eager load program_line for each delivery
