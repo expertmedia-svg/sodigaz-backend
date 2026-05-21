@@ -863,6 +863,25 @@ def test_bootstrap():
         "timestamp": utc_now_iso()
     }
 
+@router.get("/whoami")
+def whoami(current_user: User = Depends(require_driver_role), db: Session = Depends(get_db)):
+    """Check who the driver app is authenticated as"""
+    deliveries_count = db.query(Delivery).filter(Delivery.driver_id == current_user.id).count()
+    pending_count = db.query(Delivery).filter(
+        Delivery.driver_id == current_user.id,
+        Delivery.status == "pending"
+    ).count()
+
+    return {
+        "user_id": current_user.id,
+        "username": current_user.username,
+        "full_name": current_user.full_name,
+        "role": current_user.role.value,
+        "total_deliveries": deliveries_count,
+        "pending_deliveries": pending_count,
+        "timestamp": utc_now_iso()
+    }
+
 @router.get("/bootstrap")
 def get_driver_bootstrap(
     current_user: User = Depends(require_driver_role),
