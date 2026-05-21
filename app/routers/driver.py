@@ -291,6 +291,9 @@ def _refresh_program_status(program: Optional[Program], db: Session) -> None:
 
     previous_status = program.status
     active_lines = [line for line in program.lines if line.status != "cancelled"]
+
+    logger.info(f"[PROGRAM_STATUS] Programme {program.program_code}: {len(active_lines)} lignes actives")
+
     if not active_lines:
         program.status = "completed"
     else:
@@ -302,45 +305,55 @@ def _refresh_program_status(program: Optional[Program], db: Session) -> None:
             else:
                 quantity_done = line.quantity_delivered or 0
 
-            if quantity_done >= (line.quantity_planned or 0) and (line.quantity_planned or 0) > 0:
-                fully_processed.append(True)
-            else:
-                fully_processed.append(False)
+            is_complete = quantity_done >= (line.quantity_planned or 0) and (line.quantity_planned or 0) > 0
+            fully_processed.append(is_complete)
+
+            logger.info(
+                f"[PROGRAM_STATUS] Ligne {line.line_code}: "
+                f"planifiée={line.quantity_planned}, confirmée={quantity_done}, complète={is_complete}"
+            )
 
             if quantity_done > 0:
                 partially_processed = True
 
         if all(fully_processed):
             program.status = "completed"
+            logger.info(f"[PROGRAM_STATUS] ✅ Programme {program.program_code} COMPLETED")
         elif partially_processed:
             program.status = "in_progress"
         else:
             program.status = "active"
 
     if program.status == "completed" and previous_status != "completed":
+        logger.info(f"[PROGRAM_STATUS] Validation de {program.program_code} sur Sage X3...")
         _validate_sage_program_completion(program, db)
 
 
 def _validate_sage_program_completion(program: Program, db: Session) -> None:
+    logger.info(f"[SAGE_VALIDATION] Vérification du programme {program.program_code}")
+    logger.info(f"[SAGE_VALIDATION] source_system={program.source_system}, program_code={program.program_code}")
+
     if program.source_system != "sage_x3" or not program.program_code:
+        logger.warning(f"[SAGE_VALIDATION] ❌ Source non Sage X3 ou pas de code programme")
         return
 
     try:
+        logger.info(f"[SAGE_VALIDATION] 🔄 Appel valider_programme_sage({program.program_code})...")
         validation_status = valider_programme_sage(program.program_code)
+        logger.info(f"[SAGE_VALIDATION] Résultat: {validation_status}")
+
         if program.source_payload is None:
             program.source_payload = {}
         program.source_payload["sage_validation"] = {
             "status": validation_status,
             "validated_at": utc_now_iso(),
         }
-        logger.info(
-            "Programme Sage %s complété ; validation SQL appelée : %s",
-            program.program_code,
-            validation_status,
-        )
+
         if validation_status == "OK":
+            logger.info(f"[SAGE_VALIDATION] ✅ Programme {program.program_code} VALIDÉ sur Sage X3 (YFLGVAL2_0=2)")
             program.status = "completed"
         elif validation_status == "ALREADY_VALIDATED":
+            logger.info(f"[SAGE_VALIDATION] ℹ️ Programme {program.program_code} déjà validé sur Sage X3")
             program.status = "completed"
         else:
             logger.warning(
@@ -666,7 +679,14 @@ def _process_delivery_confirmation(
         )
     )
 
-    _refresh_program_status(delivery.program, db=db)
+    logger.info(f"[CONFIRMATION] ✅ Livraison {delivery.id} confirmée - Statut: {delivery.status.value}")
+
+    if delivery.program:
+        logger.info(f"[CONFIRMATION] Rafraîchissement du programme {delivery.program.program_code}...")
+        _refresh_program_status(delivery.program, db=db)
+        logger.info(f"[CONFIRMATION] Nouveau statut du programme: {delivery.program.status}")
+    else:
+        logger.warning(f"[CONFIRMATION] ⚠️ Pas de programme associé à la livraison {delivery.id}")
 
     return _build_operation_result(
         operation.idempotency_key,
