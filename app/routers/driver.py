@@ -879,6 +879,8 @@ def get_driver_bootstrap(
         ])
     ).options(joinedload(Delivery.program_line)).order_by(Delivery.scheduled_date).all()
 
+    logger.info(f"[BOOTSTRAP] Driver {current_user.id} ({current_user.username}): Found {len(deliveries)} deliveries")
+
     pricing_changed = False
     for delivery in deliveries:
         pricing_changed = _refresh_delivery_pricing_preview(delivery, db) or pricing_changed
