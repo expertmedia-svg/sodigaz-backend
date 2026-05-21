@@ -877,7 +877,11 @@ def get_driver_bootstrap(
             DeliveryStatusEnum.PENDING,
             DeliveryStatusEnum.IN_PROGRESS,
         ])
-    ).options(joinedload(Delivery.program_line)).order_by(Delivery.scheduled_date).all()
+    ).order_by(Delivery.scheduled_date).all()
+
+    # Eager load program_line for each delivery
+    for delivery in deliveries:
+        _ = delivery.program_line  # Force load relationship
 
     logger.info(f"[BOOTSTRAP] Driver {current_user.id} ({current_user.username}): Found {len(deliveries)} deliveries")
 
