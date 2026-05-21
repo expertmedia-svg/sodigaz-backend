@@ -282,7 +282,7 @@ class Delivery(Base):
     quantity_6kg_vide_recupere = Column(Integer, default=0)
     quantity_12kg_vide_recupere = Column(Integer, default=0)
     
-    status = Column(Enum(DeliveryStatusEnum), default=DeliveryStatusEnum.PENDING)
+    status = Column(Enum(DeliveryStatusEnum, native_enum=False), default=DeliveryStatusEnum.PENDING)
     
     # Tracking Sage X3 integration
     source_type = Column(String(50), default="user_created")  # user_created or sage_inbound
