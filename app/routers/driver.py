@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from datetime import datetime, timedelta
 from app.database import get_db
 from pydantic import BaseModel, Field
@@ -877,7 +877,7 @@ def get_driver_bootstrap(
             DeliveryStatusEnum.PENDING,
             DeliveryStatusEnum.IN_PROGRESS,
         ])
-    ).order_by(Delivery.scheduled_date).all()
+    ).options(joinedload(Delivery.program_line)).order_by(Delivery.scheduled_date).all()
 
     pricing_changed = False
     for delivery in deliveries:
