@@ -257,7 +257,6 @@ def get_sage_sql_health(
 def get_sage_schedule_status(
     request: Request,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(RoleEnum.ADMIN)),
 ):
     config = get_sage_sql_daily_sync_config(db)
     
