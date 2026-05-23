@@ -14,6 +14,13 @@ logger = logging.getLogger(__name__)
 
 SAGE_SQL_SYNC_SCHEDULE_NAME = "sage_sql_daily_sync"
 
+SAGE_SQL_SYNC_STATUS = {
+    "last_run_time": None,
+    "last_run_result": None,
+    "last_run_error": None,
+    "last_trigger_attempt": None
+}
+
 
 def parse_daily_sync_time(run_time: str) -> time:
     if run_time is None:
@@ -95,6 +102,7 @@ async def run_sage_sql_daily_sync_loop() -> None:
                 current_date = now.date()
                 if last_run_date != current_date:
                     last_run_date = current_date
+                    SAGE_SQL_SYNC_STATUS["last_trigger_attempt"] = now.strftime("%Y-%m-%d %H:%M:%S")
                     
                     db = SessionLocal()
                     try:
@@ -109,6 +117,15 @@ async def run_sage_sql_daily_sync_loop() -> None:
                                    result.get("updated", 0),
                                    len(result.get("errors", [])))
                         
+                        SAGE_SQL_SYNC_STATUS["last_run_time"] = now.strftime("%Y-%m-%d %H:%M:%S")
+                        SAGE_SQL_SYNC_STATUS["last_run_result"] = {
+                            "synced": result.get("synced", 0),
+                            "created": result.get("created", 0),
+                            "updated": result.get("updated", 0),
+                            "errors_count": len(result.get("errors", []))
+                        }
+                        SAGE_SQL_SYNC_STATUS["last_run_error"] = None
+                        
                         if result.get("errors"):
                             logger.warning("[SAGE SQL SCHEDULER] Erreurs détectées:")
                             for err in result.get("errors", []):
@@ -118,6 +135,7 @@ async def run_sage_sql_daily_sync_loop() -> None:
                     except Exception as exc:
                         logger.error("[SAGE SQL SCHEDULER] ========== ERREUR CRITIQUE ==========")
                         logger.exception("[SAGE SQL SCHEDULER] Exception lors de la synchronisation: %s", exc)
+                        SAGE_SQL_SYNC_STATUS["last_run_error"] = str(exc)
                     finally:
                         db.close()
 

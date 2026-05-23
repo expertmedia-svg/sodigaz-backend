@@ -258,6 +258,7 @@ def get_sage_schedule_status(
     request: Request,
     db: Session = Depends(get_db),
 ):
+    from app.services.sage_sync_scheduler import SAGE_SQL_SYNC_STATUS
     config = get_sage_sql_daily_sync_config(db)
     
     task = getattr(request.app.state, "sage_sql_sync_task", None)
@@ -288,6 +289,7 @@ def get_sage_schedule_status(
         "server_time": now.strftime("%Y-%m-%d %H:%M:%S"),
         "utc_time": utcnow.strftime("%Y-%m-%d %H:%M:%S"),
         "next_run_at": next_run.strftime("%Y-%m-%d %H:%M:%S") if next_run else None,
+        "sync_execution_status": SAGE_SQL_SYNC_STATUS
     }
 
 
