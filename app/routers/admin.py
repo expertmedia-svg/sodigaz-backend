@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
@@ -251,6 +251,45 @@ def get_sage_sql_health(
     current_user: User = Depends(require_role(RoleEnum.ADMIN)),
 ):
     return check_sage_sql_connection()
+
+
+@router.get("/integration/sage-schedule-status")
+def get_sage_schedule_status(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(RoleEnum.ADMIN)),
+):
+    config = get_sage_sql_daily_sync_config(db)
+    
+    task = getattr(request.app.state, "sage_sql_sync_task", None)
+    task_status = "unknown"
+    if task is None:
+        task_status = "not_started"
+    elif task.cancelled():
+        task_status = "cancelled"
+    elif task.done():
+        exception = task.exception() if not task.cancelled() else None
+        task_status = f"done_with_error: {exception}" if exception else "done"
+    else:
+        task_status = "running"
+        
+    now = datetime.now()
+    utcnow = datetime.utcnow()
+    
+    next_run = calculate_next_run_time(config.run_time) if config.enabled else None
+    
+    return {
+        "status": "ok",
+        "task_status": task_status,
+        "config": {
+            "enabled": config.enabled,
+            "run_time": config.run_time,
+            "description": config.description,
+        },
+        "server_time": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "utc_time": utcnow.strftime("%Y-%m-%d %H:%M:%S"),
+        "next_run_at": next_run.strftime("%Y-%m-%d %H:%M:%S") if next_run else None,
+    }
 
 
 @router.put("/integration/sage-schedule", response_model=SageSqlSyncScheduleResponse)
