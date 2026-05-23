@@ -276,21 +276,21 @@ def ecrire_livraison_sage(
 
         cursor.execute(f"USE {database}")
 
-        # UPDATE la ligne 6kg existante
-        if qty_6kg > 0:
-            cursor.execute(
-                f"""
-                UPDATE {schema}.YPRGCOLLD
-                SET YQTY_0 = %s,
-                    YSMREMB_0 = CAST(%s AS nvarchar),
-                    YDES_0 = %s
-                WHERE YPROGCOLL_0 = %s
-                AND YBPC_0 = %s
-                AND YITMREF_0 = 'G06BI'
-                """,
-                (qty_6kg, total_amount_6kg, notes or '', num_programme.strip(), client_code)
-            )
-            logger.info(f"[SAGE SQL] UPDATE {client_code} 6kg: {cursor.rowcount} ligne(s) - Qty={qty_6kg}, Montant={total_amount_6kg}, Notes={notes}")
+        # UPDATE la ligne existante (6kg par défaut ou ligne vierge originale pour ce client)
+        cursor.execute(
+            f"""
+            UPDATE {schema}.YPRGCOLLD
+            SET YQTY_0 = %s,
+                YSMREMB_0 = CAST(%s AS nvarchar),
+                YDES_0 = %s,
+                YITMREF_0 = 'G06BI'
+            WHERE YPROGCOLL_0 = %s
+            AND YBPC_0 = %s
+            AND (YITMREF_0 = 'G06BI' OR YITMREF_0 IS NULL OR LTRIM(RTRIM(YITMREF_0)) = '')
+            """,
+            (qty_6kg, total_amount_6kg, notes or '', num_programme.strip(), client_code)
+        )
+        logger.info(f"[SAGE SQL] UPDATE {client_code}: {cursor.rowcount} ligne(s) - Qty={qty_6kg}, Montant={total_amount_6kg}, Notes={notes}")
 
         # INSERT nouvelle ligne pour 12kg si qty > 0
         if qty_12kg > 0:
@@ -312,10 +312,11 @@ def ecrire_livraison_sage(
             logger.info(f"[SAGE SQL] INSERT {client_code} 12kg: ligne {next_line} - Qty={qty_12kg}, Notes={notes}")
 
         # Vérifie si TOUTES les lignes du programme sont complétées
+        # Une ligne est considérée traitée si son code article (YITMREF_0) est renseigné (non nul et non vide)
         cursor.execute(
             f"""
             SELECT COUNT(*) as total,
-                   SUM(CASE WHEN YQTY_0 > 0 THEN 1 ELSE 0 END) as completed
+                   SUM(CASE WHEN YITMREF_0 IS NOT NULL AND LTRIM(RTRIM(YITMREF_0)) <> '' THEN 1 ELSE 0 END) as completed
             FROM {schema}.YPRGCOLLD
             WHERE YPROGCOLL_0 = %s
             """,
@@ -399,25 +400,28 @@ def ecrire_programme_valide_sage(
             client_code = (livraison.get("client_code") or "").strip()
             qty_6kg = int(livraison.get("quantite_6kg") or 0)
             qty_12kg = int(livraison.get("quantite_12kg") or 0)
+            montant_total = livraison.get("montant_total") or 0
 
             if not client_code:
                 continue
 
-            # UPDATE la ligne 6kg existante
+            # UPDATE la ligne 6kg existante (ou ligne vierge originale pour ce client)
             if qty_6kg > 0:
                 cursor.execute(f"USE {database}")
                 cursor.execute(
                     f"""
                     UPDATE {schema}.YPRGCOLLD
-                    SET YQTY_0 = %s
+                    SET YQTY_0 = %s,
+                        YSMREMB_0 = CAST(%s AS nvarchar),
+                        YITMREF_0 = 'G06BI'
                     WHERE YPROGCOLL_0 = %s
                     AND YBPC_0 = %s
-                    AND YITMREF_0 = '6kg'
+                    AND (YITMREF_0 = 'G06BI' OR YITMREF_0 IS NULL OR LTRIM(RTRIM(YITMREF_0)) = '')
                     """,
-                    (qty_6kg, num_programme.strip(), client_code)
+                    (qty_6kg, montant_total, num_programme.strip(), client_code)
                 )
                 updated_count += cursor.rowcount
-                logger.info(f"[SAGE SQL] UPDATE {client_code} 6kg: {cursor.rowcount} lignes")
+                logger.info(f"[SAGE SQL] UPDATE {client_code} 6kg: {cursor.rowcount} lignes, Qty={qty_6kg}, Montant={montant_total}")
 
             # INSERT nouvelle ligne pour 12kg si qty > 0
             if qty_12kg > 0:
@@ -425,14 +429,14 @@ def ecrire_programme_valide_sage(
                 cursor.execute(
                     f"""
                     INSERT INTO {schema}.YPRGCOLLD
-                    (YPROGCOLL_0, YLIGNE_0, YBPC_0, YQTY_0, YITMREF_0)
-                    VALUES (%s, %s, %s, %s, '12kg')
+                    (YPROGCOLL_0, YLIGNE_0, YBPC_0, YQTY_0, YITMREF_0, YSMREMB_0)
+                    VALUES (%s, %s, %s, %s, 'G1250', CAST(0 AS nvarchar))
                     """,
                     (num_programme.strip(), next_line, client_code, qty_12kg)
                 )
                 inserted_count += 1
                 next_line += 1
-                logger.info(f"[SAGE SQL] INSERT {client_code} 12kg: 1 ligne")
+                logger.info(f"[SAGE SQL] INSERT {client_code} 12kg: 1 ligne, Qty={qty_12kg}")
 
         # Marque le programme comme validé
         cursor.execute(f"USE {database}")

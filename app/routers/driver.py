@@ -973,7 +973,12 @@ def get_driver_bootstrap(
     # ✅ Only active missions - NEVER include completed
     deliveries = db.query(Delivery).filter(
         Delivery.driver_id == current_user.id,
-        cast(Delivery.status, String).in_(["PENDING", "IN_PROGRESS"])
+        cast(Delivery.status, String).in_([
+            "PENDING", "IN_PROGRESS",
+            "pending", "in_progress",
+            DeliveryStatusEnum.PENDING.value,
+            DeliveryStatusEnum.IN_PROGRESS.value
+        ])
     ).order_by(Delivery.scheduled_date).all()
 
     # Eager load program_line for each delivery
