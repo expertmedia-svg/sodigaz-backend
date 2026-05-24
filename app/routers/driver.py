@@ -529,6 +529,70 @@ def _process_delivery_confirmation(
                 server_delivery_status=status_str,
             )
 
+    # Gérer la création dynamique d'une 2ème ligne SQLite si le chauffeur récolte un 2ème produit différent de l'original
+    if delivery.program_line and delivery.program_line.product_code not in ('UNKNOWN', product_type):
+        from app.models import ProgramLine
+        # C'est un 2ème produit pour le même client ! On crée une nouvelle ProgramLine et une nouvelle Delivery en SQLite
+        new_line = ProgramLine(
+            program_id=delivery.program_id,
+            line_code=f"{delivery.program_line.line_code}_2",
+            external_line_id=delivery.program_line.external_line_id,
+            client_id=delivery.program_line.client_id,
+            client_code=delivery.program_line.client_code,
+            client_name=delivery.program_line.client_name,
+            destination_address=delivery.program_line.destination_address,
+            destination_latitude=delivery.program_line.destination_latitude,
+            destination_longitude=delivery.program_line.destination_longitude,
+            contact_name=delivery.program_line.contact_name,
+            contact_phone=delivery.program_line.contact_phone,
+            product_code=product_type,
+            product_label="Gaz 12kg" if product_type == "GAZ_12KG" else "Gaz 6kg",
+            quantity_planned=0,
+            quantity_collected=0,
+            quantity_delivered=0,
+            status="pending",
+            created_at=utc_now(),
+            updated_at=utc_now(),
+        )
+        db.add(new_line)
+        db.flush()
+        
+        new_delivery = Delivery(
+            truck_id=delivery.truck_id,
+            depot_id=delivery.depot_id,
+            destination_name=delivery.destination_name,
+            destination_address=delivery.destination_address,
+            destination_latitude=delivery.destination_latitude,
+            destination_longitude=delivery.destination_longitude,
+            contact_name=delivery.contact_name,
+            contact_phone=delivery.contact_phone,
+            driver_id=delivery.driver_id,
+            quantity_6kg=0,
+            quantity_12kg=0,
+            quantity=0,
+            quantity_6kg_vide_recupere=0,
+            quantity_12kg_vide_recupere=0,
+            status=DeliveryStatusEnum.PENDING,
+            source_type=delivery.source_type,
+            external_delivery_id=delivery.external_delivery_id,
+            external_status=delivery.external_status,
+            scheduled_date=delivery.scheduled_date,
+            actual_start=delivery.actual_start or payload.delivered_at,
+            actual_end=payload.delivered_at,
+            program_type=delivery.program_type,
+            program_id=delivery.program_id,
+            program_line_id=new_line.id,
+        )
+        db.add(new_delivery)
+        db.flush()
+        
+        # On utilise cette nouvelle livraison pour la suite du traitement
+        delivery = new_delivery
+    elif delivery.program_line and delivery.program_line.product_code == 'UNKNOWN':
+        # Si c'était UNKNOWN, on met à jour avec le vrai produit confirmé par le driver
+        delivery.program_line.product_code = product_type
+        delivery.program_line.product_label = "Gaz 6kg" if product_type == "GAZ_6KG" else "Gaz 12kg"
+
     amount_summary = None
     if delivery.program_line is not None and program_type == ProgramTypeEnum.DELIVERY.value:
         pricing_rule, amount_summary = resolve_program_line_amount(
