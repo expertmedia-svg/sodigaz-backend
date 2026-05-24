@@ -470,17 +470,59 @@ def ecrire_programme_valide_sage(
             # INSERT nouvelle ligne pour 12kg si qty > 0
             if qty_12kg > 0:
                 cursor.execute(f"USE {database}")
+                # 1. Obtenir les colonnes de la ligne existante pour ce client
+                cursor.execute(
+                    f"""
+                    SELECT TOP 1 
+                        YPLV_0, YQUARTIER_0, YDATE_0, SOHNUM_0, SOPLIN_0, YNUMFICHE_0, MDL_0, CREUSR_0
+                    FROM {schema}.YPRGCOLLD
+                    WHERE YPROGCOLL_0 = %s
+                    AND YBPC_0 = %s
+                    """,
+                    (num_programme.strip(), client_code)
+                )
+                orig = cursor.fetchone()
+                yplv_val = orig[0] if orig else ''
+                yquartier_val = orig[1] if orig else ' '
+                ydate_val = orig[2] if orig else None
+                sohnum_val = orig[3] if orig else ' '
+                soplin_val = orig[4] if orig else 0
+                ynumfiche_val = orig[5] if orig else ' '
+                mdl_val = orig[6] if orig else 'CR'
+                creusr_val = orig[7] if orig else 'LOG32'
+
+                # 2. Déterminer le montant de la ligne 12kg
+                # Si du 6kg a été livré, le montant total est déjà écrit sur la ligne 6kg.
+                # Sinon (uniquement du 12kg), on écrit le montant total sur la ligne 12kg.
+                amt_12kg = 0 if qty_6kg > 0 else montant_total
+
+                # 3. Insérer la nouvelle ligne avec toutes les colonnes requises et auto-générées
                 cursor.execute(
                     f"""
                     INSERT INTO {schema}.YPRGCOLLD
-                    (YPROGCOLL_0, YLIGNE_0, YBPC_0, YQTY_0, YITMREF_0, YSMREMB_0)
-                    VALUES (%s, %s, %s, %s, 'G1250', CAST(0 AS nvarchar))
+                    (YPROGCOLL_0, YLIGNE_0, YBPC_0, YPLV_0, YQUARTIER_0, YDATE_0, SOHNUM_0, SOPLIN_0, 
+                     YITMREF_0, YQTY_0, YNUMFICHE_0, YDES_0, MDL_0, CREUSR_0, UPDUSR_0, YSMREMB_0, CREDATTIM_0, UPDDATTIM_0, AUUID_0)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'G1250', %s, %s, '', %s, %s, 'LOG32', CAST(%s AS nvarchar), GETDATE(), GETDATE(), NEWID())
                     """,
-                    (num_programme.strip(), next_line, client_code, qty_12kg)
+                    (
+                        num_programme.strip(),
+                        next_line,
+                        client_code,
+                        yplv_val,
+                        yquartier_val,
+                        ydate_val,
+                        sohnum_val,
+                        soplin_val,
+                        qty_12kg,
+                        ynumfiche_val,
+                        mdl_val,
+                        creusr_val,
+                        amt_12kg
+                    )
                 )
                 inserted_count += 1
                 next_line += 1
-                logger.info(f"[SAGE SQL] INSERT {client_code} 12kg: 1 ligne, Qty={qty_12kg}")
+                logger.info(f"[SAGE SQL] INSERT {client_code} 12kg: 1 ligne, Qty={qty_12kg}, Montant={amt_12kg}")
 
         # Marque le programme comme validé
         cursor.execute(f"USE {database}")
