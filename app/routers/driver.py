@@ -274,11 +274,16 @@ def _serialize_driver_program(program: Program) -> dict[str, Any]:
 
 
 def _load_driver_today_programs(db: Session, driver_id: int) -> list[dict[str, Any]]:
+    # On autorise l'affichage des programmes complétés récemment (moins de 2 jours) pour l'historique
+    recent_limit = datetime.utcnow() - timedelta(days=2)
     programs = (
         db.query(Program)
         .filter(
             Program.driver_id == driver_id,
-            Program.status.in_(["active", "in_progress"]),
+            or_(
+                Program.status.in_(["active", "in_progress"]),
+                (Program.status == "completed") & (Program.program_date >= recent_limit)
+            ),
         )
         .order_by(Program.program_date.asc(), Program.updated_at.desc())
         .all()
