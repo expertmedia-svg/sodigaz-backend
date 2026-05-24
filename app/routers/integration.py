@@ -776,6 +776,21 @@ def sync_sage_programs_today(
     return sync_sage_programs_from_sql(db)
 
 
+@router.post("/sage/sync-today-system")
+def sync_sage_programs_today_system(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """
+    Endpoint de synchronisation système déclenché par un script planifié (ex: planificateur Windows).
+    Authentifié par le token Sage X3 dans les headers (X-Sage-X3-Token).
+    """
+    sage_service = SageX3Service(db)
+    if not sage_service.validate_inbound_headers(request.headers):
+        raise HTTPException(status_code=401, detail="Invalid Sage X3 token")
+    return sync_sage_programs_from_sql(db)
+
+
 @router.post("/sage/validate-program", response_model=ValidatedProgramResponse)
 def validate_program_to_sage(
     payload: ValidatedProgramWriteback,
