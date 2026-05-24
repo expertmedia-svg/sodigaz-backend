@@ -25,7 +25,8 @@ from app.models import (
 import logging
 
 from app.auth import get_current_user, verify_password, create_access_token
-from app.services.pricing_service import resolve_program_line_amount
+from app.services.pricing_service import resolve_program_line_amount, resolve_active_pricing_rule, calculate_delivery_amount
+from decimal import Decimal
 from app.services.outbox_worker import process_pending_outbox_events
 from app.services.sage_sql_service import valider_programme_sage, ecrire_livraison_sage
 from app.time_utils import utc_now, utc_now_iso
@@ -511,33 +512,22 @@ def _process_delivery_confirmation(
         )
 
     if delivery.status == DeliveryStatusEnum.COMPLETED:
-        conflict = _register_conflict(
-            db,
-            batch_id=batch_id,
-            driver_id=driver_id,
-            device_id=device_id,
-            idempotency_key=operation.idempotency_key,
-            delivery=delivery,
-            conflict_type="delivery_already_completed",
-            local_payload=payload_dict,
-            server_state={
-                "delivery_status": delivery.status.value if hasattr(delivery.status, "value") else str(delivery.status),
-                "actual_end": delivery.actual_end.isoformat() if delivery.actual_end else None,
-                "end_latitude": delivery.end_latitude,
-                "end_longitude": delivery.end_longitude,
-            },
-        )
-        status_str = delivery.status.value if hasattr(delivery.status, "value") else str(delivery.status)
-        return _build_operation_result(
-            operation.idempotency_key,
-            "conflict",
-            "DELIVERY_ALREADY_COMPLETED",
-            "La livraison est deja cloturee sur le serveur.",
-            retryable=False,
-            conflict_id=conflict.id,
-            delivery_id=delivery.id,
-            server_delivery_status=status_str,
-        )
+        # Vérifier si on a déjà une confirmation pour ce produit spécifique (idempotence multiniveau)
+        existing_conf = db.query(DeliveryConfirmationEvent).filter(
+            DeliveryConfirmationEvent.delivery_id == delivery.id,
+            DeliveryConfirmationEvent.product_type == product_type
+        ).first()
+        
+        if existing_conf:
+            status_str = delivery.status.value if hasattr(delivery.status, "value") else str(delivery.status)
+            return _build_operation_result(
+                operation.idempotency_key,
+                "accepted",
+                "SUCCESS",
+                "Déjà traité pour ce produit.",
+                delivery_id=delivery.id,
+                server_delivery_status=status_str,
+            )
 
     amount_summary = None
     if delivery.program_line is not None and program_type == ProgramTypeEnum.DELIVERY.value:
@@ -575,12 +565,39 @@ def _process_delivery_confirmation(
             else "partial"
         )
         delivery.collected_quantity_total = collected_quantity
-        delivery.pricing_rule_id = None
-        delivery.unit_price_applied = None
-        delivery.tax_rate_applied = None
-        delivery.subtotal_amount = None
-        delivery.tax_amount = None
-        delivery.total_amount = None
+        
+        # Résolution du prix et calcul automatique pour les collectes
+        resolved_prod = product_type
+        if resolved_prod == 'UNKNOWN' or not resolved_prod:
+            resolved_prod = 'GAZ_6KG'
+            
+        pricing_rule = resolve_active_pricing_rule(db, product_code=resolved_prod, depot_id=delivery.depot_id)
+        unit_price = Decimal("1676")  # Valeur par défaut si règle absente
+        tax_rate = Decimal("0")
+        if pricing_rule:
+            unit_price = pricing_rule.unit_price
+            tax_rate = pricing_rule.tax_rate
+            
+        amount_summary = calculate_delivery_amount(
+            quantity_delivered=collected_quantity,
+            unit_price=unit_price,
+            tax_rate=tax_rate,
+        )
+        
+        delivery.pricing_rule_id = pricing_rule.id if pricing_rule else None
+        delivery.unit_price_applied = amount_summary["unit_price"]
+        delivery.tax_rate_applied = amount_summary["tax_rate"]
+        delivery.subtotal_amount = amount_summary["subtotal_amount"]
+        delivery.tax_amount = amount_summary["tax_amount"]
+        delivery.total_amount = amount_summary["total_amount"]
+
+        # Mettre à jour également la program_line pour l'affichage de l'admin
+        delivery.program_line.pricing_rule_id = pricing_rule.id if pricing_rule else None
+        delivery.program_line.unit_price = amount_summary["unit_price"]
+        delivery.program_line.tax_rate = amount_summary["tax_rate"]
+        delivery.program_line.subtotal_amount = amount_summary["subtotal_amount"]
+        delivery.program_line.tax_amount = amount_summary["tax_amount"]
+        delivery.program_line.total_amount = amount_summary["total_amount"]
 
     if program_type == ProgramTypeEnum.COLLECTION.value:
         delivery.collected_quantity_total = payload.quantity_collected or payload.quantity_empty_collected
@@ -707,7 +724,9 @@ def _process_delivery_confirmation(
             qty_6kg=qty_6kg,
             qty_12kg=qty_12kg,
             notes=payload.notes,
-            total_amount_6kg=amount_summary["total_amount"] if (program_type == ProgramTypeEnum.DELIVERY.value and qty_6kg > 0 and amount_summary) else 0,
+            total_amount_6kg=float(amount_summary["total_amount"]) if (qty_6kg > 0 and amount_summary) else 0,
+            total_amount_12kg=float(amount_summary["total_amount"]) if (qty_12kg > 0 and amount_summary) else 0,
+            product_type=product_type,
         )
 
         if sage_result["status"] == "OK":

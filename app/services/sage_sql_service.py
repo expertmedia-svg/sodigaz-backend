@@ -249,6 +249,8 @@ def ecrire_livraison_sage(
     qty_12kg: int,
     notes: str = None,
     total_amount_6kg: float = 0,
+    total_amount_12kg: float = 0,
+    product_type: str = None,
 ) -> dict[str, Any]:
     """Écrit UNE SEULE livraison dans Sage X3 immédiatement.
 
@@ -262,6 +264,8 @@ def ecrire_livraison_sage(
         qty_12kg: Quantité 12kg confirmée
         notes: Commentaire du driver (YDES_0)
         total_amount_6kg: Montant total 6kg (YSMREMB_0)
+        total_amount_12kg: Montant total 12kg (YSMREMB_0)
+        product_type: Type de produit en cours de confirmation
 
     Returns:
         {status: OK/ERROR, detail: message, program_validated: bool}
@@ -272,28 +276,29 @@ def ecrire_livraison_sage(
         schema = settings.SAGE_SQL_SCHEMA
         database = settings.SAGE_SQL_DATABASE
 
-        logger.info(f"[SAGE SQL] Écriture livraison: {num_programme} / {client_code} → 6kg={qty_6kg}, 12kg={qty_12kg}")
+        logger.info(f"[SAGE SQL] Écriture livraison: {num_programme} / {client_code} → 6kg={qty_6kg}, 12kg={qty_12kg}, product_type={product_type}")
 
         cursor.execute(f"USE {database}")
 
         # UPDATE la ligne existante (6kg par défaut ou ligne vierge originale pour ce client)
-        cursor.execute(
-            f"""
-            UPDATE {schema}.YPRGCOLLD
-            SET YQTY_0 = %s,
-                YSMREMB_0 = CAST(%s AS nvarchar),
-                YDES_0 = %s,
-                YITMREF_0 = 'G06BI'
-            WHERE YPROGCOLL_0 = %s
-            AND YBPC_0 = %s
-            AND (YITMREF_0 = 'G06BI' OR YITMREF_0 IS NULL OR LTRIM(RTRIM(YITMREF_0)) = '')
-            """,
-            (qty_6kg, total_amount_6kg, notes or '', num_programme.strip(), client_code)
-        )
-        logger.info(f"[SAGE SQL] UPDATE {client_code}: {cursor.rowcount} ligne(s) - Qty={qty_6kg}, Montant={total_amount_6kg}, Notes={notes}")
+        if not product_type or product_type == "GAZ_6KG":
+            cursor.execute(
+                f"""
+                UPDATE {schema}.YPRGCOLLD
+                SET YQTY_0 = %s,
+                    YSMREMB_0 = CAST(%s AS nvarchar),
+                    YDES_0 = %s,
+                    YITMREF_0 = 'G06BI'
+                WHERE YPROGCOLL_0 = %s
+                AND YBPC_0 = %s
+                AND (YITMREF_0 = 'G06BI' OR YITMREF_0 IS NULL OR LTRIM(RTRIM(YITMREF_0)) = '')
+                """,
+                (qty_6kg, total_amount_6kg, notes or '', num_programme.strip(), client_code)
+            )
+            logger.info(f"[SAGE SQL] UPDATE {client_code} 6kg: {cursor.rowcount} ligne(s) - Qty={qty_6kg}, Montant={total_amount_6kg}, Notes={notes}")
 
         # INSERT nouvelle ligne pour 12kg si qty > 0
-        if qty_12kg > 0:
+        if (product_type == "GAZ_12KG" and qty_12kg > 0) or (not product_type and qty_12kg > 0):
             cursor.execute(
                 f"SELECT MAX(YLIGNE_0) FROM {schema}.YPRGCOLLD WHERE YPROGCOLL_0 = %s",
                 (num_programme.strip(),)
@@ -307,9 +312,9 @@ def ecrire_livraison_sage(
                 (YPROGCOLL_0, YLIGNE_0, YBPC_0, YQTY_0, YITMREF_0, YSMREMB_0, YDES_0)
                 VALUES (%s, %s, %s, %s, 'G1250', CAST(%s AS nvarchar), %s)
                 """,
-                (num_programme.strip(), next_line, client_code, qty_12kg, 0, notes or '')
+                (num_programme.strip(), next_line, client_code, qty_12kg, total_amount_12kg, notes or '')
             )
-            logger.info(f"[SAGE SQL] INSERT {client_code} 12kg: ligne {next_line} - Qty={qty_12kg}, Notes={notes}")
+            logger.info(f"[SAGE SQL] INSERT {client_code} 12kg: ligne {next_line} - Qty={qty_12kg}, Montant={total_amount_12kg}, Notes={notes}")
 
         # Vérifie si TOUTES les lignes du programme sont complétées
         # Une ligne est considérée traitée si son code article (YITMREF_0) est renseigné (non nul et non vide)
