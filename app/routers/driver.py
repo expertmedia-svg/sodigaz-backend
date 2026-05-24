@@ -810,7 +810,7 @@ def _process_delivery_confirmation(
                 for prog_delivery in program_deliveries:
                     prog_delivery.external_status = "synced"
                     logger.info(f"[SAGE_WRITE] 📍 Delivery {prog_delivery.id} marked as synced")
-                db.commit()
+                db.flush()
         else:
             logger.error(f"[SAGE_WRITE] ❌ Erreur: {sage_result['detail']}")
 
