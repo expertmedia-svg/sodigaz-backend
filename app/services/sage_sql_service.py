@@ -553,6 +553,8 @@ def corriger_livraison_sage(
     """Corrige les quantités d'une livraison dans Sage X3.
     Met à jour la ligne 6kg (G06BI) et la ligne 12kg (G1250).
     """
+    if notes:
+        notes = notes[:90]
     conn = get_sage_sql_connection()
     try:
         cursor = conn.cursor()

@@ -180,8 +180,8 @@ class DeliveryResponse(OrmModel):
     depot_id: int
     destination_name: str
     destination_address: str
-    destination_latitude: float
-    destination_longitude: float
+    destination_latitude: Optional[float] = None
+    destination_longitude: Optional[float] = None
     contact_name: Optional[str]
     contact_phone: Optional[str]
     driver_id: Optional[int]
