@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, UploadFile, File, status, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
@@ -12,7 +12,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 from app.database import get_db
-from app.models import User, Depot, Truck, Delivery, GPSLog, Stock, RoleEnum, DeliveryStatusEnum, SyncConflict, IntegrationOutbox, IntegrationHealthCheck, SageMissionStatusEnum, DriverMapping, DriverMappingStatusEnum, DeliveryConfirmationEvent, SyncBatch
+from app.models import User, Depot, Truck, Delivery, GPSLog, Stock, RoleEnum, DeliveryStatusEnum, SyncConflict, IntegrationOutbox, IntegrationHealthCheck, SageMissionStatusEnum, DriverMapping, DriverMappingStatusEnum, DeliveryConfirmationEvent, SyncBatch, Program
 from app.schemas import (
     DepotCreate, DepotUpdate, DepotResponse,
     TruckCreate, TruckResponse,
@@ -1163,6 +1163,59 @@ def generate_global_report(
         media_type="text/csv; charset=utf-8",
         headers={
             "Content-Disposition": "attachment; filename=rapport_global.csv",
+        },
+    )
+
+
+@router.get("/integration/programs/{identifier}/pdf")
+def get_admin_program_pdf(
+    identifier: str,
+    token: str | None = Query(default=None),
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    """Génère le PDF d'un programme logistique validé pour l'administrateur (par ID ou par Code)."""
+    # 1. Extraire et valider le token
+    final_token = token
+    if not final_token and authorization:
+        if authorization.startswith("Bearer "):
+            final_token = authorization.split(" ")[1]
+            
+    if not final_token:
+        raise HTTPException(status_code=401, detail="Non autorisé (Token manquant)")
+        
+    from jose import jwt
+    from app.auth import settings
+    from app.models import User, RoleEnum
+    try:
+        payload = jwt.decode(final_token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        user_id = int(payload.get("sub"))
+    except Exception:
+        raise HTTPException(status_code=401, detail="Token invalide ou expiré")
+        
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user or user.role != RoleEnum.ADMIN:
+        raise HTTPException(status_code=403, detail="Accès interdit")
+
+    program = None
+    if identifier.isdigit():
+        program = db.query(Program).filter(Program.id == int(identifier)).first()
+    
+    if not program:
+        program = db.query(Program).filter(Program.program_code == identifier).first()
+        
+    if program is None:
+        raise HTTPException(status_code=404, detail="Programme introuvable")
+    
+    from app.services.pdf_service import generate_program_pdf_stream
+    from fastapi.responses import StreamingResponse
+    
+    pdf_buffer = generate_program_pdf_stream(program)
+    return StreamingResponse(
+        pdf_buffer,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"inline; filename=programme_{program.program_code}.pdf",
         },
     )
 
