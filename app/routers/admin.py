@@ -8,8 +8,11 @@ from pydantic import BaseModel, Field
 import io
 import csv
 import math
+import logging
+logger = logging.getLogger(__name__)
+
 from app.database import get_db
-from app.models import User, Depot, Truck, Delivery, GPSLog, Stock, RoleEnum, DeliveryStatusEnum, SyncConflict, IntegrationOutbox, IntegrationHealthCheck, SageMissionStatusEnum, DriverMapping, DriverMappingStatusEnum
+from app.models import User, Depot, Truck, Delivery, GPSLog, Stock, RoleEnum, DeliveryStatusEnum, SyncConflict, IntegrationOutbox, IntegrationHealthCheck, SageMissionStatusEnum, DriverMapping, DriverMappingStatusEnum, DeliveryConfirmationEvent, SyncBatch
 from app.schemas import (
     DepotCreate, DepotUpdate, DepotResponse,
     TruckCreate, TruckResponse,
@@ -20,7 +23,7 @@ from app.schemas import (
 )
 from app.auth import require_role, hash_password
 from app.services.outbox_worker import check_sage_x3_health, process_pending_outbox_events
-from app.services.sage_sql_service import check_sage_sql_connection, get_sage_sql_connection
+from app.services.sage_sql_service import check_sage_sql_connection, get_sage_sql_connection, corriger_livraison_sage
 from app.services.sage_sync_scheduler import (
     calculate_next_run_time,
     get_sage_sql_daily_sync_config,
@@ -32,6 +35,11 @@ from app.config import settings
 from import_locator_csv import import_depots_csv_text
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+class DeliveryCorrectionPayload(BaseModel):
+    quantity_6kg: int = Field(..., ge=0, description="Nouvelle quantité de 6kg")
+    quantity_12kg: int = Field(..., ge=0, description="Nouvelle quantité de 12kg")
+    comment: Optional[str] = Field(None, description="Commentaire de rectification par le logisticien")
 
 
 def _resolve_driver_mapping_status(is_active: bool, explicit_status: Optional[str] = None) -> DriverMappingStatusEnum:
@@ -535,7 +543,9 @@ def get_delivery_details(
 
     return {
         "delivery_id": delivery.id,
-        "status": delivery.status.value,
+        "status": delivery.status,
+        "quantity_6kg": delivery.quantity_6kg,
+        "quantity_12kg": delivery.quantity_12kg,
         "scheduled_date": delivery.scheduled_date.isoformat() if delivery.scheduled_date else None,
         "actual_start": delivery.actual_start.isoformat() if delivery.actual_start else None,
         "actual_end": delivery.actual_end.isoformat() if delivery.actual_end else None,
@@ -675,6 +685,89 @@ async def update_delivery(
         "status": delivery.status
     })
     
+    return DeliveryResponse.from_orm(delivery)
+
+
+@router.post("/deliveries/{delivery_id}/correct", response_model=DeliveryResponse)
+async def correct_delivery_quantities(
+    delivery_id: int,
+    payload: DeliveryCorrectionPayload,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(RoleEnum.ADMIN, RoleEnum.RAVITAILLEUR))
+):
+    delivery = db.query(Delivery).filter(Delivery.id == delivery_id).first()
+    if not delivery:
+        raise HTTPException(status_code=404, detail="Livraison introuvable")
+
+    # Stocker les anciennes valeurs pour le commentaire d'historique
+    old_6kg = delivery.quantity_6kg or 0
+    old_12kg = delivery.quantity_12kg or 0
+    
+    # Mettre à jour les quantités locales de la livraison
+    delivery.quantity_6kg = payload.quantity_6kg
+    delivery.quantity_12kg = payload.quantity_12kg
+    
+    # Mettre à jour les quantités livrées/collectées globales
+    confirmed_quantity = payload.quantity_6kg + payload.quantity_12kg
+    if delivery.program_type == "COLLECTION":
+        delivery.collected_quantity_total = confirmed_quantity
+        delivery.delivered_quantity_total = 0
+    else:
+        delivery.delivered_quantity_total = confirmed_quantity
+        delivery.collected_quantity_total = 0
+
+    # Mettre à jour les lignes de programme associées
+    if delivery.program_line:
+        if delivery.program_line.product_code == "GAZ_6KG":
+            delivery.program_line.quantity_delivered = payload.quantity_6kg if delivery.program_type == "DELIVERY" else 0
+            delivery.program_line.quantity_collected = payload.quantity_6kg if delivery.program_type == "COLLECTION" else 0
+        else:
+            delivery.program_line.quantity_delivered = payload.quantity_12kg if delivery.program_type == "DELIVERY" else 0
+            delivery.program_line.quantity_collected = payload.quantity_12kg if delivery.program_type == "COLLECTION" else 0
+
+    # Ajouter le commentaire de rectification dédié
+    rectification_tag = f"[RECTIFICATION LOGISTIQUE] Rectifié par {current_user.username} le {datetime.now().strftime('%d/%m/%Y %H:%M')}. "
+    rectification_details = f"Anciennes Qtes: 6kg={old_6kg}, 12kg={old_12kg} -> Nouvelles Qtes: 6kg={payload.quantity_6kg}, 12kg={payload.quantity_12kg}. "
+    user_note = f"Commentaire: {payload.comment}" if payload.comment else "Aucun commentaire supplémentaire."
+    
+    full_rectification_note = f"{rectification_tag}{rectification_details}{user_note}"
+    
+    if delivery.notes:
+        delivery.notes = f"{delivery.notes}\n\n{full_rectification_note}"
+    else:
+        delivery.notes = full_rectification_note
+
+    # Enregistrer la modification en base de données
+    db.commit()
+    db.refresh(delivery)
+
+    # Si c'est un programme connecté à Sage X3, propager la rectification sur Sage X3!
+    if delivery.program and delivery.program.source_system == "sage_x3" and delivery.program.program_code:
+        client_code = delivery.program_line.client_code if delivery.program_line else ""
+        if client_code:
+            logger.info(f"[RECTIFICATION SAGE] Écriture des corrections sur Sage: {delivery.program.program_code}/{client_code}")
+            sage_result = corriger_livraison_sage(
+                num_programme=delivery.program.program_code,
+                client_code=client_code,
+                qty_6kg=payload.quantity_6kg,
+                qty_12kg=payload.quantity_12kg,
+                notes=delivery.notes,
+            )
+            if sage_result["status"] != "OK":
+                logger.error(f"[RECTIFICATION SAGE] ❌ Échec écriture Sage: {sage_result['detail']}")
+            else:
+                logger.info(f"[RECTIFICATION SAGE] ✅ Écriture Sage réussie.")
+
+    # Diffuser la mise à jour via WebSocket
+    await manager.broadcast_to_all({
+        "type": "delivery_updated",
+        "delivery_id": delivery.id,
+        "status": delivery.status,
+        "quantity_6kg": delivery.quantity_6kg,
+        "quantity_12kg": delivery.quantity_12kg,
+        "notes": delivery.notes
+    })
+
     return DeliveryResponse.from_orm(delivery)
 
 
@@ -1111,7 +1204,6 @@ def validate_delivery_on_sage(
 ):
     """Envoyer une livraison complétée à Sage X3 avec les quantités livrées (6kg/12kg)."""
     from app.services.sage_sql_service import valider_programme_sage, get_sage_sql_connection
-    import pymssql
 
     delivery = db.query(Delivery).filter(Delivery.id == delivery_id).first()
     if not delivery:

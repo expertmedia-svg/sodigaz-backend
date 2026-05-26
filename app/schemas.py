@@ -186,6 +186,9 @@ class DeliveryResponse(OrmModel):
     contact_phone: Optional[str]
     driver_id: Optional[int]
     quantity: float
+    quantity_6kg: Optional[int] = 0
+    quantity_12kg: Optional[int] = 0
+    echange_effectue: Optional[bool] = False
     status: DeliveryStatusEnum
     scheduled_date: datetime
     actual_start: Optional[datetime]

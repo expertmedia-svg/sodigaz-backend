@@ -286,16 +286,16 @@ def ecrire_livraison_sage(
                 f"""
                 UPDATE {schema}.YPRGCOLLD
                 SET YQTY_0 = %s,
-                    YSMREMB_0 = CAST(%s AS nvarchar),
+                    YSMREMB_0 = '0',
                     YDES_0 = %s,
                     YITMREF_0 = 'G06BI'
                 WHERE YPROGCOLL_0 = %s
                 AND YBPC_0 = %s
                 AND (YITMREF_0 = 'G06BI' OR YITMREF_0 IS NULL OR LTRIM(RTRIM(YITMREF_0)) = '')
                 """,
-                (qty_6kg, total_amount_6kg, notes or '', num_programme.strip(), client_code)
+                (qty_6kg, notes or '', num_programme.strip(), client_code)
             )
-            logger.info(f"[SAGE SQL] UPDATE {client_code} 6kg: {cursor.rowcount} ligne(s) - Qty={qty_6kg}, Montant={total_amount_6kg}, Notes={notes}")
+            logger.info(f"[SAGE SQL] UPDATE {client_code} 6kg: {cursor.rowcount} ligne(s) - Qty={qty_6kg}, Notes={notes}")
 
         # INSERT nouvelle ligne pour 12kg si qty > 0
         if (product_type == "GAZ_12KG" and qty_12kg > 0) or (not product_type and qty_12kg > 0):
@@ -334,7 +334,7 @@ def ecrire_livraison_sage(
                 INSERT INTO {schema}.YPRGCOLLD
                 (YPROGCOLL_0, YLIGNE_0, YBPC_0, YPLV_0, YQUARTIER_0, YDATE_0, SOHNUM_0, SOPLIN_0, 
                  YITMREF_0, YQTY_0, YNUMFICHE_0, YDES_0, MDL_0, CREUSR_0, UPDUSR_0, YSMREMB_0, CREDATTIM_0, UPDDATTIM_0, AUUID_0)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'G1250', %s, %s, %s, %s, %s, 'LOG32', CAST(%s AS nvarchar), GETDATE(), GETDATE(), NEWID())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'G1250', %s, %s, %s, %s, %s, 'LOG32', '0', GETDATE(), GETDATE(), NEWID())
                 """,
                 (
                     num_programme.strip(),
@@ -350,10 +350,9 @@ def ecrire_livraison_sage(
                     notes or '',
                     mdl_val,
                     creusr_val,
-                    total_amount_12kg
                 )
             )
-            logger.info(f"[SAGE SQL] INSERT {client_code} 12kg: ligne {next_line} - Qty={qty_12kg}, Montant={total_amount_12kg}, Notes={notes}")
+            logger.info(f"[SAGE SQL] INSERT {client_code} 12kg: ligne {next_line} - Qty={qty_12kg}, Notes={notes}")
 
         # Vérifie si TOUTES les lignes du programme sont complétées
         # Une ligne est considérée traitée si son code article (YITMREF_0) est renseigné (non nul et non vide)
@@ -446,26 +445,23 @@ def ecrire_programme_valide_sage(
             qty_12kg = int(livraison.get("quantite_12kg") or 0)
             montant_total = livraison.get("montant_total") or 0
 
-            if not client_code:
-                continue
-
-            # UPDATE la ligne 6kg existante (ou ligne vierge originale pour ce client)
+                   # UPDATE la ligne 6kg existante (ou ligne vierge originale pour ce client)
             if qty_6kg > 0:
                 cursor.execute(f"USE {database}")
                 cursor.execute(
                     f"""
                     UPDATE {schema}.YPRGCOLLD
                     SET YQTY_0 = %s,
-                        YSMREMB_0 = CAST(%s AS nvarchar),
+                        YSMREMB_0 = '0',
                         YITMREF_0 = 'G06BI'
                     WHERE YPROGCOLL_0 = %s
                     AND YBPC_0 = %s
                     AND (YITMREF_0 = 'G06BI' OR YITMREF_0 IS NULL OR LTRIM(RTRIM(YITMREF_0)) = '')
                     """,
-                    (qty_6kg, montant_total, num_programme.strip(), client_code)
+                    (qty_6kg, num_programme.strip(), client_code)
                 )
                 updated_count += cursor.rowcount
-                logger.info(f"[SAGE SQL] UPDATE {client_code} 6kg: {cursor.rowcount} lignes, Qty={qty_6kg}, Montant={montant_total}")
+                logger.info(f"[SAGE SQL] UPDATE {client_code} 6kg: {cursor.rowcount} lignes, Qty={qty_6kg}")
 
             # INSERT nouvelle ligne pour 12kg si qty > 0
             if qty_12kg > 0:
@@ -491,18 +487,13 @@ def ecrire_programme_valide_sage(
                 mdl_val = orig[6] if orig else 'CR'
                 creusr_val = orig[7] if orig else 'LOG32'
 
-                # 2. Déterminer le montant de la ligne 12kg
-                # Si du 6kg a été livré, le montant total est déjà écrit sur la ligne 6kg.
-                # Sinon (uniquement du 12kg), on écrit le montant total sur la ligne 12kg.
-                amt_12kg = 0 if qty_6kg > 0 else montant_total
-
-                # 3. Insérer la nouvelle ligne avec toutes les colonnes requises et auto-générées
+                # 2. Insérer la nouvelle ligne avec toutes les colonnes requises et auto-générées
                 cursor.execute(
                     f"""
                     INSERT INTO {schema}.YPRGCOLLD
                     (YPROGCOLL_0, YLIGNE_0, YBPC_0, YPLV_0, YQUARTIER_0, YDATE_0, SOHNUM_0, SOPLIN_0, 
                      YITMREF_0, YQTY_0, YNUMFICHE_0, YDES_0, MDL_0, CREUSR_0, UPDUSR_0, YSMREMB_0, CREDATTIM_0, UPDDATTIM_0, AUUID_0)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'G1250', %s, %s, '', %s, %s, 'LOG32', CAST(%s AS nvarchar), GETDATE(), GETDATE(), NEWID())
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'G1250', %s, %s, '', %s, %s, 'LOG32', '0', GETDATE(), GETDATE(), NEWID())
                     """,
                     (
                         num_programme.strip(),
@@ -517,12 +508,11 @@ def ecrire_programme_valide_sage(
                         ynumfiche_val,
                         mdl_val,
                         creusr_val,
-                        amt_12kg
                     )
                 )
                 inserted_count += 1
                 next_line += 1
-                logger.info(f"[SAGE SQL] INSERT {client_code} 12kg: 1 ligne, Qty={qty_12kg}, Montant={amt_12kg}")
+                logger.info(f"[SAGE SQL] INSERT {client_code} 12kg: 1 ligne, Qty={qty_12kg}")
 
         # Marque le programme comme validé
         cursor.execute(f"USE {database}")
@@ -549,6 +539,135 @@ def ecrire_programme_valide_sage(
             "updated_lines": 0,
             "inserted_lines": 0,
         }
+    finally:
+        conn.close()
+
+
+def corriger_livraison_sage(
+    num_programme: str,
+    client_code: str,
+    qty_6kg: int,
+    qty_12kg: int,
+    notes: str = None,
+) -> dict[str, Any]:
+    """Corrige les quantités d'une livraison dans Sage X3.
+    Met à jour la ligne 6kg (G06BI) et la ligne 12kg (G1250).
+    """
+    conn = get_sage_sql_connection()
+    try:
+        cursor = conn.cursor()
+        schema = settings.SAGE_SQL_SCHEMA
+        database = settings.SAGE_SQL_DATABASE
+        cursor.execute(f"USE {database}")
+
+        # 1. Mettre à jour la ligne 6kg (G06BI)
+        # On met le prix (YSMREMB_0) à '0' car la comptabilité de Sage s'en occupe automatiquement !
+        cursor.execute(
+            f"""
+            UPDATE {schema}.YPRGCOLLD
+            SET YQTY_0 = %s,
+                YSMREMB_0 = '0',
+                YDES_0 = %s
+            WHERE LTRIM(RTRIM(YPROGCOLL_0)) = %s
+            AND LTRIM(RTRIM(YBPC_0)) = %s
+            AND LTRIM(RTRIM(YITMREF_0)) = 'G06BI'
+            """,
+            (qty_6kg, notes or '', num_programme.strip(), client_code.strip())
+        )
+        logger.info(f"[SAGE SQL CORRECTION] UPDATE 6kg pour {client_code}: rowcount={cursor.rowcount}")
+
+        # 2. Gérer la ligne 12kg (G1250)
+        # Vérifier si elle existe déjà
+        cursor.execute(
+            f"""
+            SELECT COUNT(*) 
+            FROM {schema}.YPRGCOLLD
+            WHERE LTRIM(RTRIM(YPROGCOLL_0)) = %s
+            AND LTRIM(RTRIM(YBPC_0)) = %s
+            AND LTRIM(RTRIM(YITMREF_0)) = 'G1250'
+            """,
+            (num_programme.strip(), client_code.strip())
+        )
+        exists_12kg = cursor.fetchone()[0] > 0
+
+        if exists_12kg:
+            # Elle existe, on la met à jour
+            cursor.execute(
+                f"""
+                UPDATE {schema}.YPRGCOLLD
+                SET YQTY_0 = %s,
+                    YSMREMB_0 = '0',
+                    YDES_0 = %s
+                WHERE LTRIM(RTRIM(YPROGCOLL_0)) = %s
+                AND LTRIM(RTRIM(YBPC_0)) = %s
+                AND LTRIM(RTRIM(YITMREF_0)) = 'G1250'
+                """,
+                (qty_12kg, notes or '', num_programme.strip(), client_code.strip())
+            )
+            logger.info(f"[SAGE SQL CORRECTION] UPDATE 12kg pour {client_code}: rowcount={cursor.rowcount}")
+        elif qty_12kg > 0:
+            # Elle n'existe pas et on a besoin d'insérer une quantité > 0
+            # Récupérer les informations de la ligne existante
+            cursor.execute(
+                f"""
+                SELECT TOP 1 
+                    YPLV_0, YQUARTIER_0, YDATE_0, SOHNUM_0, SOPLIN_0, YNUMFICHE_0, MDL_0, CREUSR_0
+                FROM {schema}.YPRGCOLLD
+                WHERE LTRIM(RTRIM(YPROGCOLL_0)) = %s
+                AND LTRIM(RTRIM(YBPC_0)) = %s
+                """,
+                (num_programme.strip(), client_code.strip())
+            )
+            orig = cursor.fetchone()
+            yplv_val = orig[0] if orig else ''
+            yquartier_val = orig[1] if orig else ' '
+            ydate_val = orig[2] if orig else None
+            sohnum_val = orig[3] if orig else ' '
+            soplin_val = orig[4] if orig else 0
+            ynumfiche_val = orig[5] if orig else ' '
+            mdl_val = orig[6] if orig else 'CR'
+            creusr_val = orig[7] if orig else 'LOG32'
+
+            # Récupérer le numéro de ligne max
+            cursor.execute(
+                f"SELECT MAX(YLIGNE_0) FROM {schema}.YPRGCOLLD WHERE LTRIM(RTRIM(YPROGCOLL_0)) = %s",
+                (num_programme.strip(),)
+            )
+            max_line = cursor.fetchone()[0]
+            next_line = (max_line or 0) + 1
+
+            # Insérer la ligne 12kg
+            cursor.execute(
+                f"""
+                INSERT INTO {schema}.YPRGCOLLD
+                (YPROGCOLL_0, YLIGNE_0, YBPC_0, YPLV_0, YQUARTIER_0, YDATE_0, SOHNUM_0, SOPLIN_0, 
+                 YITMREF_0, YQTY_0, YNUMFICHE_0, YDES_0, MDL_0, CREUSR_0, UPDUSR_0, YSMREMB_0, CREDATTIM_0, UPDDATTIM_0, AUUID_0)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'G1250', %s, %s, %s, %s, %s, 'LOG32', '0', GETDATE(), GETDATE(), NEWID())
+                """,
+                (
+                    num_programme.strip(),
+                    next_line,
+                    client_code.strip(),
+                    yplv_val,
+                    yquartier_val,
+                    ydate_val,
+                    sohnum_val,
+                    soplin_val,
+                    qty_12kg,
+                    ynumfiche_val,
+                    notes or '',
+                    mdl_val,
+                    creusr_val,
+                )
+            )
+            logger.info(f"[SAGE SQL CORRECTION] INSERT 12kg pour {client_code}: ligne {next_line}")
+
+        conn.commit()
+        return {"status": "OK", "detail": "Correction écrite dans Sage X3"}
+    except Exception as exc:
+        logger.error(f"[SAGE SQL CORRECTION] Erreur lors de la correction Sage {num_programme}/{client_code}: {exc}")
+        conn.rollback()
+        return {"status": "ERROR", "detail": str(exc)}
     finally:
         conn.close()
 

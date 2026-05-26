@@ -267,6 +267,7 @@ def _serialize_driver_program(program: Program) -> dict[str, Any]:
                 "tax_rate": float(line.tax_rate) if line.tax_rate is not None else None,
                 "total_amount": float(line.total_amount) if line.total_amount is not None else None,
                 "delivery_id": line.delivery.id if line.delivery else None,
+                "delivery_notes": line.delivery.notes if (line.delivery and line.delivery.notes) else None,
             }
             for line in sorted(program.lines, key=lambda item: item.line_code)
         ],
