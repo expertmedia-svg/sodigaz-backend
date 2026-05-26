@@ -1686,3 +1686,57 @@ def get_validated_programs(
     except Exception as e:
         logger.error(f"[DRIVER API] Erreur récupération programmes validés: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/programs/{identifier}/pdf")
+def get_driver_program_pdf(
+    identifier: str,
+    token: str | None = Query(default=None),
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    """Génère le PDF d'un programme logistique validé pour le chauffeur (par ID ou par Code)."""
+    from fastapi import Header, Query, HTTPException
+    from jose import jwt
+    from app.auth import settings
+    from app.models import User
+    
+    final_token = token
+    if not final_token and authorization:
+        if authorization.startswith("Bearer "):
+            final_token = authorization.split(" ")[1]
+            
+    if not final_token:
+        raise HTTPException(status_code=401, detail="Non autorisé (Token manquant)")
+        
+    try:
+        payload = jwt.decode(final_token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        user_id = int(payload.get("sub"))
+    except Exception:
+        raise HTTPException(status_code=401, detail="Token invalide ou expiré")
+        
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="Utilisateur introuvable")
+
+    program = None
+    if identifier.isdigit():
+        program = db.query(Program).filter(Program.id == int(identifier)).first()
+    
+    if not program:
+        program = db.query(Program).filter(Program.program_code == identifier).first()
+        
+    if program is None:
+        raise HTTPException(status_code=404, detail="Programme introuvable")
+    
+    from app.services.pdf_service import generate_program_pdf_stream
+    from fastapi.responses import StreamingResponse
+    
+    pdf_buffer = generate_program_pdf_stream(program)
+    return StreamingResponse(
+        pdf_buffer,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"inline; filename=programme_{program.program_code}.pdf",
+        },
+    )
