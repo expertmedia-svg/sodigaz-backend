@@ -549,6 +549,7 @@ def corriger_livraison_sage(
     qty_6kg: int,
     qty_12kg: int,
     notes: str = None,
+    product_code: str = None,
 ) -> dict[str, Any]:
     """Corrige les quantités d'une livraison dans Sage X3.
     Met à jour la ligne 6kg (G06BI) et la ligne 12kg (G1250).
@@ -564,36 +565,7 @@ def corriger_livraison_sage(
 
         # 1. Mettre à jour la ligne 6kg (G06BI)
         # On met le prix (YSMREMB_0) à '0' car la comptabilité de Sage s'en occupe automatiquement !
-        cursor.execute(
-            f"""
-            UPDATE {schema}.YPRGCOLLD
-            SET YQTY_0 = %s,
-                YSMREMB_0 = '0',
-                YDES_0 = %s
-            WHERE LTRIM(RTRIM(YPROGCOLL_0)) = %s
-            AND LTRIM(RTRIM(YBPC_0)) = %s
-            AND LTRIM(RTRIM(YITMREF_0)) = 'G06BI'
-            """,
-            (qty_6kg, notes or '', num_programme.strip(), client_code.strip())
-        )
-        logger.info(f"[SAGE SQL CORRECTION] UPDATE 6kg pour {client_code}: rowcount={cursor.rowcount}")
-
-        # 2. Gérer la ligne 12kg (G1250)
-        # Vérifier si elle existe déjà
-        cursor.execute(
-            f"""
-            SELECT COUNT(*) 
-            FROM {schema}.YPRGCOLLD
-            WHERE LTRIM(RTRIM(YPROGCOLL_0)) = %s
-            AND LTRIM(RTRIM(YBPC_0)) = %s
-            AND LTRIM(RTRIM(YITMREF_0)) = 'G1250'
-            """,
-            (num_programme.strip(), client_code.strip())
-        )
-        exists_12kg = cursor.fetchone()[0] > 0
-
-        if exists_12kg:
-            # Elle existe, on la met à jour
+        if product_code is None or product_code == "GAZ_6KG":
             cursor.execute(
                 f"""
                 UPDATE {schema}.YPRGCOLLD
@@ -602,11 +574,42 @@ def corriger_livraison_sage(
                     YDES_0 = %s
                 WHERE LTRIM(RTRIM(YPROGCOLL_0)) = %s
                 AND LTRIM(RTRIM(YBPC_0)) = %s
+                AND LTRIM(RTRIM(YITMREF_0)) = 'G06BI'
+                """,
+                (qty_6kg, notes or '', num_programme.strip(), client_code.strip())
+            )
+            logger.info(f"[SAGE SQL CORRECTION] UPDATE 6kg pour {client_code}: rowcount={cursor.rowcount}")
+
+        # 2. Gérer la ligne 12kg (G1250)
+        if product_code is None or product_code == "GAZ_12KG":
+            # Vérifier si elle existe déjà
+            cursor.execute(
+                f"""
+                SELECT COUNT(*) 
+                FROM {schema}.YPRGCOLLD
+                WHERE LTRIM(RTRIM(YPROGCOLL_0)) = %s
+                AND LTRIM(RTRIM(YBPC_0)) = %s
                 AND LTRIM(RTRIM(YITMREF_0)) = 'G1250'
                 """,
-                (qty_12kg, notes or '', num_programme.strip(), client_code.strip())
+                (num_programme.strip(), client_code.strip())
             )
-            logger.info(f"[SAGE SQL CORRECTION] UPDATE 12kg pour {client_code}: rowcount={cursor.rowcount}")
+            exists_12kg = cursor.fetchone()[0] > 0
+
+            if exists_12kg:
+                # Elle existe, on la met à jour
+                cursor.execute(
+                    f"""
+                    UPDATE {schema}.YPRGCOLLD
+                    SET YQTY_0 = %s,
+                        YSMREMB_0 = '0',
+                        YDES_0 = %s
+                    WHERE LTRIM(RTRIM(YPROGCOLL_0)) = %s
+                    AND LTRIM(RTRIM(YBPC_0)) = %s
+                    AND LTRIM(RTRIM(YITMREF_0)) = 'G1250'
+                    """,
+                    (qty_12kg, notes or '', num_programme.strip(), client_code.strip())
+                )
+                logger.info(f"[SAGE SQL CORRECTION] UPDATE 12kg pour {client_code}: rowcount={cursor.rowcount}")
         elif qty_12kg > 0:
             # Elle n'existe pas et on a besoin d'insérer une quantité > 0
             # Récupérer les informations de la ligne existante

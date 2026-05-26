@@ -752,6 +752,7 @@ async def correct_delivery_quantities(
                 qty_6kg=payload.quantity_6kg,
                 qty_12kg=payload.quantity_12kg,
                 notes=delivery.notes,
+                product_code=delivery.program_line.product_code if delivery.program_line else None,
             )
             if sage_result["status"] != "OK":
                 logger.error(f"[RECTIFICATION SAGE] ❌ Échec écriture Sage: {sage_result['detail']}")
