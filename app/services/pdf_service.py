@@ -131,8 +131,8 @@ def generate_program_pdf_stream(program: Program) -> io.BytesIO:
     story.append(Spacer(1, 15))
     
     # 2. Métadonnées opérationnelles (grille 2 colonnes sous forme de Table)
-    driver_name = f"{program.driver.first_name or ''} {program.driver.last_name or ''}".strip() or program.driver.username if program.driver else "Non assigné"
-    driver_phone = program.driver.phone_number if program.driver and program.driver.phone_number else "-"
+    driver_name = program.driver.full_name or program.driver.username if program.driver else "Non assigné"
+    driver_phone = program.driver.phone if program.driver and program.driver.phone else "-"
     truck_info = f"{program.truck.license_plate} ({program.truck.model or 'Camion'})" if program.truck else "Aucun"
     depot_name = program.depot.name if program.depot else "-"
     
