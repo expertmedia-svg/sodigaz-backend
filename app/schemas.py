@@ -178,8 +178,8 @@ class DeliveryResponse(OrmModel):
     id: int
     truck_id: int
     depot_id: int
-    destination_name: str
-    destination_address: str
+    destination_name: Optional[str] = None
+    destination_address: Optional[str] = None
     destination_latitude: Optional[float] = None
     destination_longitude: Optional[float] = None
     contact_name: Optional[str]
@@ -190,7 +190,7 @@ class DeliveryResponse(OrmModel):
     quantity_12kg: Optional[int] = 0
     echange_effectue: Optional[bool] = False
     status: DeliveryStatusEnum
-    scheduled_date: datetime
+    scheduled_date: Optional[datetime] = None
     actual_start: Optional[datetime]
     actual_end: Optional[datetime]
     start_latitude: Optional[float]
