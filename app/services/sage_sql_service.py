@@ -610,62 +610,62 @@ def corriger_livraison_sage(
                     (qty_12kg, notes or '', num_programme.strip(), client_code.strip())
                 )
                 logger.info(f"[SAGE SQL CORRECTION] UPDATE 12kg pour {client_code}: rowcount={cursor.rowcount}")
-        elif qty_12kg > 0:
-            # Elle n'existe pas et on a besoin d'insérer une quantité > 0
-            # Récupérer les informations de la ligne existante
-            cursor.execute(
-                f"""
-                SELECT TOP 1 
-                    YPLV_0, YQUARTIER_0, YDATE_0, SOHNUM_0, SOPLIN_0, YNUMFICHE_0, MDL_0, CREUSR_0
-                FROM {schema}.YPRGCOLLD
-                WHERE LTRIM(RTRIM(YPROGCOLL_0)) = %s
-                AND LTRIM(RTRIM(YBPC_0)) = %s
-                """,
-                (num_programme.strip(), client_code.strip())
-            )
-            orig = cursor.fetchone()
-            yplv_val = orig[0] if orig else ''
-            yquartier_val = orig[1] if orig else ' '
-            ydate_val = orig[2] if orig else None
-            sohnum_val = orig[3] if orig else ' '
-            soplin_val = orig[4] if orig else 0
-            ynumfiche_val = orig[5] if orig else ' '
-            mdl_val = orig[6] if orig else 'CR'
-            creusr_val = orig[7] if orig else 'LOG32'
-
-            # Récupérer le numéro de ligne max
-            cursor.execute(
-                f"SELECT MAX(YLIGNE_0) FROM {schema}.YPRGCOLLD WHERE LTRIM(RTRIM(YPROGCOLL_0)) = %s",
-                (num_programme.strip(),)
-            )
-            max_line = cursor.fetchone()[0]
-            next_line = (max_line or 0) + 1
-
-            # Insérer la ligne 12kg
-            cursor.execute(
-                f"""
-                INSERT INTO {schema}.YPRGCOLLD
-                (YPROGCOLL_0, YLIGNE_0, YBPC_0, YPLV_0, YQUARTIER_0, YDATE_0, SOHNUM_0, SOPLIN_0, 
-                 YITMREF_0, YQTY_0, YNUMFICHE_0, YDES_0, MDL_0, CREUSR_0, UPDUSR_0, YSMREMB_0, CREDATTIM_0, UPDDATTIM_0, AUUID_0)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'G1250', %s, %s, %s, %s, %s, 'LOG32', '0', GETDATE(), GETDATE(), NEWID())
-                """,
-                (
-                    num_programme.strip(),
-                    next_line,
-                    client_code.strip(),
-                    yplv_val,
-                    yquartier_val,
-                    ydate_val,
-                    sohnum_val,
-                    soplin_val,
-                    qty_12kg,
-                    ynumfiche_val,
-                    notes or '',
-                    mdl_val,
-                    creusr_val,
+            elif qty_12kg > 0:
+                # Elle n'existe pas et on a besoin d'insérer une quantité > 0
+                # Récupérer les informations de la ligne existante
+                cursor.execute(
+                    f"""
+                    SELECT TOP 1 
+                        YPLV_0, YQUARTIER_0, YDATE_0, SOHNUM_0, SOPLIN_0, YNUMFICHE_0, MDL_0, CREUSR_0
+                    FROM {schema}.YPRGCOLLD
+                    WHERE LTRIM(RTRIM(YPROGCOLL_0)) = %s
+                    AND LTRIM(RTRIM(YBPC_0)) = %s
+                    """,
+                    (num_programme.strip(), client_code.strip())
                 )
-            )
-            logger.info(f"[SAGE SQL CORRECTION] INSERT 12kg pour {client_code}: ligne {next_line}")
+                orig = cursor.fetchone()
+                yplv_val = orig[0] if orig else ''
+                yquartier_val = orig[1] if orig else ' '
+                ydate_val = orig[2] if orig else None
+                sohnum_val = orig[3] if orig else ' '
+                soplin_val = orig[4] if orig else 0
+                ynumfiche_val = orig[5] if orig else ' '
+                mdl_val = orig[6] if orig else 'CR'
+                creusr_val = orig[7] if orig else 'LOG32'
+
+                # Récupérer le numéro de ligne max
+                cursor.execute(
+                    f"SELECT MAX(YLIGNE_0) FROM {schema}.YPRGCOLLD WHERE LTRIM(RTRIM(YPROGCOLL_0)) = %s",
+                    (num_programme.strip(),)
+                )
+                max_line = cursor.fetchone()[0]
+                next_line = (max_line or 0) + 1
+
+                # Insérer la ligne 12kg
+                cursor.execute(
+                    f"""
+                    INSERT INTO {schema}.YPRGCOLLD
+                    (YPROGCOLL_0, YLIGNE_0, YBPC_0, YPLV_0, YQUARTIER_0, YDATE_0, SOHNUM_0, SOPLIN_0, 
+                     YITMREF_0, YQTY_0, YNUMFICHE_0, YDES_0, MDL_0, CREUSR_0, UPDUSR_0, YSMREMB_0, CREDATTIM_0, UPDDATTIM_0, AUUID_0)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'G1250', %s, %s, %s, %s, %s, 'LOG32', '0', GETDATE(), GETDATE(), NEWID())
+                    """,
+                    (
+                        num_programme.strip(),
+                        next_line,
+                        client_code.strip(),
+                        yplv_val,
+                        yquartier_val,
+                        ydate_val,
+                        sohnum_val,
+                        soplin_val,
+                        qty_12kg,
+                        ynumfiche_val,
+                        notes or '',
+                        mdl_val,
+                        creusr_val,
+                    )
+                )
+                logger.info(f"[SAGE SQL CORRECTION] INSERT 12kg pour {client_code}: ligne {next_line}")
 
         conn.commit()
         return {"status": "OK", "detail": "Correction écrite dans Sage X3"}

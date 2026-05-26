@@ -718,7 +718,7 @@ async def correct_delivery_quantities(
 
     # Mettre à jour les lignes de programme associées
     if delivery.program_line:
-        if delivery.program_line.product_code == "GAZ_6KG":
+        if delivery.program_line.product_code in ["GAZ_6KG", "G06BI"]:
             delivery.program_line.quantity_delivered = payload.quantity_6kg if delivery.program_type == "DELIVERY" else 0
             delivery.program_line.quantity_collected = payload.quantity_6kg if delivery.program_type == "COLLECTION" else 0
         else:
